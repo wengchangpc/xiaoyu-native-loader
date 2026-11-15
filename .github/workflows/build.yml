@@ -29,11 +29,14 @@ jobs:
       - name: Inspect output
         run: |
           dir build\Release
-          python -c "import struct,sys; p=r'build/Release/xiaoyu_loader.dll'; d=open(p,'rb').read(0x200); pe=struct.unpack_from('<I', d, 0x3C)[0]; m=struct.unpack_from('<H', d, pe+4)[0]; print('machine=0x%04X (0x8664 = x64)' % m); print('size=%d' % __import__('os').path.getsize(p))"
+          python -c "import struct,os; p=r'build/Release/xiaoyu_loader.dll'; d=open(p,'rb').read(0x200); pe=struct.unpack_from('<I', d, 0x3C)[0]; m=struct.unpack_from('<H', d, pe+4)[0]; print('dll machine=0x%04X (0x8664 = x64) size=%d' % (m, os.path.getsize(p)))"
+          python -c "import struct,os; p=r'build/Release/xiaoyu_inject.exe'; d=open(p,'rb').read(0x200); pe=struct.unpack_from('<I', d, 0x3C)[0]; m=struct.unpack_from('<H', d, pe+4)[0]; print('inject machine=0x%04X size=%d' % (m, os.path.getsize(p)))"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: xiaoyu-loader-x64
-          path: build/Release/xiaoyu_loader.dll
+          path: |
+            build/Release/xiaoyu_loader.dll
+            build/Release/xiaoyu_inject.exe
           if-no-files-found: error

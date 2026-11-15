@@ -35,3 +35,22 @@ set_target_properties(xiaoyu_loader PROPERTIES
 )
 
 target_link_libraries(xiaoyu_loader PRIVATE kernel32)
+
+# ---- 注入器（顺手带上，免得还要去外面找工具）----
+# 只依赖 kernel32，同一个 CI 一起出；目标机不需要 VC 运行库。
+add_executable(xiaoyu_inject tools/injector.cpp)
+
+target_compile_definitions(xiaoyu_inject PRIVATE
+    _CRT_SECURE_NO_WARNINGS
+    WIN32_LEAN_AND_MEAN
+    NOMINMAX
+    UNICODE
+    _UNICODE
+)
+
+set_target_properties(xiaoyu_inject PROPERTIES
+    PREFIX ""
+    OUTPUT_NAME "xiaoyu_inject"
+)
+
+target_link_libraries(xiaoyu_inject PRIVATE kernel32)

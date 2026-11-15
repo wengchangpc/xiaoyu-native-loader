@@ -40,7 +40,8 @@ cmake -S . -B build -A x64
 cmake --build build --config Release
 ```
 
-产物：`build/Release/xiaoyu_loader.dll`（**必须 x64**，位数不对注入会失败）。
+产物：`build/Release/xiaoyu_loader.dll`（**必须 x64**，位数不对注入会失败）
+和 `build/Release/xiaoyu_inject.exe`（配套注入器，只依赖 kernel32，目标机不用装运行库）。
 
 GitHub Actions：推送到 `main` 或手动 `workflow_dispatch`，跑完在 Artifacts 里下载
 `xiaoyu-loader-x64`。工作流会顺带校验 PE 头的 `machine == 0x8664`，防止误出 32 位。
@@ -48,7 +49,24 @@ GitHub Actions：推送到 `main` 或手动 `workflow_dispatch`，跑完在 Arti
 ## 使用
 
 1. 启动游戏，**先进入一个存档**（让 ModSDK 初始化；探针也会等到解释器就绪）
-2. 用任意注入器把 `xiaoyu_loader.dll` 注入 `Minecraft.Windows.exe`
+2. 注入 `xiaoyu_loader.dll`
+
+自带注入器（把两个文件放同一个目录，用管理员 cmd）：
+
+```bat
+:: 先看看进程在不在
+xiaoyu_inject.exe Minecraft.Windows.exe --list
+
+:: 注入（不传 DLL 路径就用同目录的 xiaoyu_loader.dll）
+xiaoyu_inject.exe Minecraft.Windows.exe
+
+:: 也可以指定 pid 和完整路径
+xiaoyu_inject.exe 12345 C:\Xiaoyu\xiaoyu_loader.dll
+
+:: 卸载
+xiaoyu_inject.exe Minecraft.Windows.exe --free
+```
+
 3. 看两个日志：
 
 ```
@@ -94,5 +112,6 @@ src/log.cpp            文件日志（C:\Xiaoyu\loader.log，失败退回 %TEMP%
 src/python_host.cpp    找 python*.dll、解析导出、持 GIL 执行脚本、枚举模块
 python/bootstrap.py    探针脚本（注入后在游戏进程里跑）
 tools/embed.py         把 bootstrap.py 转成 C 字节数组
-.github/workflows/     windows-latest + MSVC 出 x64 DLL
+tools/injector.cpp     配套注入器（OpenProcess + WriteProcessMemory + CreateRemoteThread）
+.github/workflows/     windows-latest + MSVC 出 x64 DLL / EXE
 ```
