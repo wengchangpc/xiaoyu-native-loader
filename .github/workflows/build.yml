@@ -1,0 +1,35 @@
+name: build-dll
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Embed bootstrap payload
+        run: python tools/embed.py
+
+      - name: Configure (x64)
+        run: cmake -S . -B build -A x64
+
+      - name: Build (Release)
+        run: cmake --build build --config Release --parallel
+
+      - name: Inspect output
+        run: |
+          dir build\Release
+          python -c "import struct,sys; p=r'build/Release/xiaoyu_loader.dll'; d=open(p,'rb').read(0x200); pe=struct.unpack_from('<I', d, 0x3C)[0]; m=struct.unpack_from('<H', d, pe+4)[0]; print('machine=0x%04X (0x8664 = x64)' % m); print('size=%d' % __import__('os').path.getsize(p))"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: xiaoyu-loader-x64
+          path: build/Release/xiaoyu_loader.dll
+          if-no-files-found: error

@@ -1,0 +1,16 @@
+# src/embedded_bootstrap.h 由 tools/embed.py 生成
+src/embedded_bootstrap.h
+
+# 构建产物
+build/
+out/
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.lib
+
+# 编辑器
+.vs/
+.idea/
+.vscode/
