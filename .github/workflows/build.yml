@@ -8,6 +8,10 @@ on:
 jobs:
   build:
     runs-on: windows-latest
+    env:
+      # Windows runner 的控制台默认不是 UTF-8，脚本里有任何非 ASCII 的 print 都会炸
+      PYTHONIOENCODING: utf-8
+      PYTHONUTF8: "1"
 
     steps:
       - name: Checkout

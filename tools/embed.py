@@ -18,16 +18,16 @@ PER_LINE = 20
 
 def main():
     if not os.path.isfile(SRC):
-        print('缺少 %s' % SRC)
+        print('missing: %s' % SRC)
         return 1
     data = open(SRC, 'rb').read()
     if not data:
-        print('bootstrap.py 为空')
+        print('bootstrap.py is empty')
         return 1
     # 只做提示：py2 的 PyRun_SimpleString 没有 coding cookie，非 ASCII 会炸
     non_ascii = [i for i, b in enumerate(data) if b > 127]
     if non_ascii:
-        print('warn: bootstrap.py 含 %d 个非 ASCII 字节（py2 下可能 SyntaxError）'
+        print('warn: bootstrap.py has %d non-ASCII bytes (py2 may raise SyntaxError)'
               % len(non_ascii))
 
     lines = []
@@ -46,7 +46,7 @@ def main():
     out = '\n'.join(lines)
     with io.open(DST, 'w', encoding='utf-8', newline='\n') as f:
         f.write(out)
-    print('生成 %s (%d 字节 payload, %d 行)' % (DST, len(data), len(lines)))
+    print('wrote %s (%d bytes payload, %d lines)' % (DST, len(data), len(lines)))
     return 0
 
 
