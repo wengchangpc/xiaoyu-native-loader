@@ -71,5 +71,12 @@ void SetPhysicalWanted(bool on);
 // 物理（非注入）左键是否按下
 bool PhysLeftDown();
 
+// 相对模式：面板打开期间我们把鼠标的 Raw Input 接到自己窗口上（游戏因此
+// 收不到鼠标位移，视角冻结），坐标就不能再用 GetCursorPos 了 —— 游戏会把
+// 光标按在屏幕中间。改成用 Raw Input 的相对位移自己累加一个虚拟光标。
+void SetRelativeMode(bool on);
+bool RelativeMode();
+void AddMouseDelta(int dx, int dy);
+
 }  // namespace input
 }  // namespace xiaoyu

@@ -37,7 +37,7 @@ float g_scale = 0.0f;   // 0 = 自动：按窗口大小算缩放，见 gui.cpp �
 bool g_chinese = true;
 bool g_block_input = true;
 bool g_auto_unlock = false;
-bool g_take_focus = true;
+bool g_take_focus = false;   // 抢前台会让基岩版弹出自己的 Esc 菜单，默认关
 int g_unlock_key = 0xA4;  // VK_LMENU
 
 bool g_dirty = false;
@@ -153,7 +153,10 @@ void Load() {
             continue;
         }
         if (key == L"focus") {
-            g_take_focus = (_wtoi(value.c_str()) != 0);
+            // 抢前台这条路已经废弃：基岩版失焦会弹自己的 Esc 菜单，
+            // 和 GUI 抢置顶，关掉 GUI 后游戏还停在菜单里。
+            // 旧配置里写着 focus=1 也一律按关处理。
+            g_take_focus = false;
             saw_focus = true;
             continue;
         }
@@ -221,6 +224,7 @@ void Load() {
         }
         g_scale = 0.0f;
         g_auto_unlock = false;
+        g_take_focus = false;
     }
 
     LogLine("[cfg] loaded %d lines, scale=%.2f chinese=%d", n, g_scale,

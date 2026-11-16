@@ -82,8 +82,38 @@ void AddWheel(float delta) {
     g_wheel += delta;
 }
 
+bool g_relative = false;
+
+void SetRelativeMode(bool on) {
+    if (g_relative == on) return;
+    if (on) UpdateCursorPos();   // 以当前真实光标位置为起点，避免第一帧跳一下
+    g_relative = on;
+    LogLine("[input] 相对光标模式 %d，起点 (%.0f,%.0f)", on ? 1 : 0, g_mx, g_my);
+}
+
+bool RelativeMode() { return g_relative; }
+
+void AddMouseDelta(int dx, int dy) {
+    if (!g_relative) return;
+    g_mx += (float)dx;
+    g_my += (float)dy;
+    // 钳在客户区内：跑出去之后面板就点不到了
+    if (g_hwnd != nullptr) {
+        RECT rc = {};
+        if (GetClientRect(g_hwnd, &rc)) {
+            const float w = (float)(rc.right - 1);
+            const float h = (float)(rc.bottom - 1);
+            if (g_mx < 0.0f) g_mx = 0.0f;
+            if (g_my < 0.0f) g_my = 0.0f;
+            if (g_mx > w) g_mx = w;
+            if (g_my > h) g_my = h;
+        }
+    }
+}
+
 void NewFrame() {
-    UpdateCursorPos();
+    // 相对模式下不能用 GetCursorPos：游标被按住不动，读出来永远是同一个点
+    if (!g_relative) UpdateCursorPos();
 
     // 鼠标按键：边沿检测
     for (int b = 0; b < kMaxBtn; ++b) {

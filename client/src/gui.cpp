@@ -1157,7 +1157,11 @@ void OnFrame() {
 
         // 系统光标不可见时（游戏把全局光标藏了）补一个自己的指针。
         // 只在"真的看不见"时画，避免和系统光标叠成两个。
-        if (!SystemCursorVisible()) DrawSoftwareCursor(input::X(), input::Y());
+        // 相对模式下系统光标停在原地不动，必须画自己的；
+        // 透视情况下（面板没开）游戏隐藏光标时也补一个
+        if (input::RelativeMode() || !SystemCursorVisible()) {
+            DrawSoftwareCursor(input::X(), input::Y());
+        }
     }
 
     DrawHud();

@@ -100,15 +100,53 @@ HWND FindGameWindow() {
     return ctx.best;
 }
 
-// ── 滚轮 ────────────────────────────────────────────────────────
-// 血泪教训，别改回去：
-// 这里原来用 RegisterRawInputDevices(usagePage=1, usage=2, RIDEV_INPUTSINK) 收滚轮，
-// 关面板时再 RIDEV_REMOVE。Raw Input 的注册是**按进程按设备类型唯一**的，
-// 我们的 RIDEV_REMOVE 把游戏自己那份鼠标注册也一起删了 —— 而游戏正是靠它
-// 读相对位移来转视角。表现就是：只要开过一次面板，之后视角永远不能转。
+// ── 鼠标 Raw Input 接管 ─────────────────────────────────────────
+// 走过的弯路，别再踩：
+//   1) RIDEV_INPUTSINK + RIDEV_REMOVE 收滚轮 —— REMOVE 把**游戏自己那份**
+//      鼠标注册一起删了，游戏再也读不到相对位移，视角永久锁死。
+//   2) 抢前台让游戏自己放开鼠标 —— 基岩版在失焦时会弹出自己的 Esc 菜单，
+//      那个菜单会和 GUI 抢置顶，而且关掉 GUI 后游戏还停在菜单里。
 //
-// 现在滚轮交给 input.cpp 里的 WH_MOUSE_LL 钩子，那是另一条通道，
-// 不碰 Raw Input 的注册表。
+// 现在这条路：面板打开时把鼠标的 Raw Input **接到我们自己窗口**上
+// （同一 usage 的注册是进程内唯一的，注册我们这份就等于顶掉游戏那份），
+// 于是游戏收不到位移、视角冻结，但它不失焦、不弹菜单、照常渲染；
+// 面板关闭时把注册还给游戏窗口，视角立刻恢复。
+//
+// 代价：游戏不再维护光标，系统光标停在原地。所以坐标改用相对位移累加
+// （input::SetRelativeMode），由我们画一个软件光标。
+bool g_raw_hooked = false;      // 只在状态真正切换时打日志
+ULONGLONG g_raw_reassert_at = 0;
+
+void HookMouseToOverlay(bool on) {
+    if (g_overlay == nullptr) return;
+    RAWINPUTDEVICE rid = {};
+    rid.usUsagePage = 0x01;   // Generic Desktop Controls
+    rid.usUsage = 0x02;       // Mouse
+    if (on) {
+        rid.dwFlags = RIDEV_INPUTSINK;   // 窗口不在前台也要收
+        rid.hwndTarget = g_overlay;
+    } else {
+        // 还给游戏。游戏自己是"仅前台接收"，前台状态下行为一致。
+        // 找不到游戏窗口就干脆不动 —— 传 nullptr 会注册失败，
+        // 反而可能把已有的注册搞成半残状态。
+        if (g_game == nullptr || !IsWindow(g_game)) g_game = FindGameWindow();
+        if (g_game == nullptr) return;
+        rid.dwFlags = 0;
+        rid.hwndTarget = g_game;
+    }
+    if (!RegisterRawInputDevices(&rid, 1, sizeof(rid))) {
+        LogLine("[overlay] 鼠标 Raw Input 切换失败(%d) err=%lu", on ? 1 : 0,
+                (unsigned long)GetLastError());
+        return;
+    }
+    // 重复调用只重注册、不改模式：有些引擎检测到鼠标设备变化会自己抢回去，
+    // 面板打开期间每秒重申一次，确保冻结是持续的。
+    if (g_raw_hooked != on) {
+        g_raw_hooked = on;
+        input::SetRelativeMode(on);
+        LogLine("[overlay] 鼠标 Raw Input -> %s", on ? "覆盖层（游戏视角冻结）" : "游戏");
+    }
+}
 
 // 兜底路径：合成游戏自己的"释放鼠标"键。
 // 默认关闭（cfg::AutoUnlock() 为假）。只有 focus=0 且这条路的键位确实
@@ -223,13 +261,14 @@ void UpdateInputMode() {
     // 注意：SDK 里没有 GWLP_EXSTYLE 这个常量。
     // GWLP_* 那一套只覆盖指针大小的项（WNDPROC / HINSTANCE / HWNDPARENT /
     // USERDATA / ID），style 和 exstyle 永远是 32 位的 GWL_*。
-    // 面板打开时要能拿到焦点（点面板就等于点自己），所以连 NOACTIVATE 一起去掉；
-    // 关掉时两边都加回来，恢复成"看得见但完全不参与输入"的纯覆盖层。
+    // 只切 TRANSPARENT。NOACTIVATE 必须一直保留 —— 一旦点击覆盖层能激活它，
+    // 游戏就会失焦，而基岩版失焦时会弹出自己的 Esc 菜单，那个菜单会和
+    // GUI 抢置顶，关掉 GUI 后游戏也还停在菜单里出不来。
     LONG_PTR ex = GetWindowLongPtrW(g_overlay, GWL_EXSTYLE);
     if (want) {
-        ex &= ~(LONG_PTR)(WS_EX_TRANSPARENT | WS_EX_NOACTIVATE);
+        ex &= ~(LONG_PTR)WS_EX_TRANSPARENT;
     } else {
-        ex |= (LONG_PTR)(WS_EX_TRANSPARENT | WS_EX_NOACTIVATE);
+        ex |= (LONG_PTR)WS_EX_TRANSPARENT;
     }
     SetWindowLongPtrW(g_overlay, GWL_EXSTYLE, ex);
 
@@ -238,15 +277,17 @@ void UpdateInputMode() {
                      SWP_FRAMECHANGED);
 
     if (want) {
-        // 抢前台：游戏自己会放开鼠标，不需要合成任何键
+        // 不再抢前台。失焦会让基岩版弹出自己的 Esc 菜单，
+        // 那个菜单既会跟 GUI 抢置顶，又会在关掉 GUI 之后继续暂停游戏。
+        // 改成接管鼠标的 Raw Input：游戏收不到位移就等于视角冻结，
+        // 但它始终是前台窗口、始终在跑。
         if (cfg::TakeFocus()) TakeForeground();
-        // 兜底路径：有些客户端失焦也不会放开，那才轮到合成键（默认关）
         if (cfg::AutoUnlock()) ToggleGameCursorRelease("打开面板", true);
-        input::SetWheelWanted(true);
+        HookMouseToOverlay(true);
         // 顺便让渲染层在下一帧做一次像素自检，把面板的实际绘制范围写进日志
         render::RequestSelfCheck();
     } else {
-        input::SetWheelWanted(false);
+        HookMouseToOverlay(false);
         // 把前台还给游戏，视角控制立刻恢复
         if (cfg::TakeFocus()) ReleaseToGame();
         if (cfg::AutoUnlock()) ToggleGameCursorRelease("关闭面板", false);
@@ -318,13 +359,32 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             input::AddWheel((float)GET_WHEEL_DELTA_WPARAM(wp) / (float)WHEEL_DELTA);
             return 0;
 
+        case WM_INPUT: {
+            // 面板打开期间鼠标注册在我们身上，位移和滚轮都从这里来
+            RAWINPUT raw = {};
+            UINT size = sizeof(raw);
+            if (GetRawInputData((HRAWINPUT)lp, RID_INPUT, &raw, &size,
+                                sizeof(RAWINPUTHEADER)) != (UINT)-1) {
+                if (raw.header.dwType == RIM_TYPEMOUSE) {
+                    const RAWMOUSE& m = raw.data.mouse;
+                    if ((m.usFlags & MOUSE_MOVE_ABSOLUTE) == 0) {
+                        input::AddMouseDelta(m.lLastX, m.lLastY);
+                    }
+                    if (m.usButtonFlags & RI_MOUSE_WHEEL) {
+                        input::AddWheel((float)(short)m.usButtonData /
+                                        (float)WHEEL_DELTA);
+                    }
+                }
+            }
+            break;
+        }
+
         case WM_ERASEBKGND:
             return 1;  // 内容全由 DComp 合成，别让 GDI 刷一层底色
 
         case WM_MOUSEACTIVATE:
-            // 面板打开时允许激活（这样才能把前台从游戏手里拿过来），
-            // 收起时保持不激活，免得误点把游戏顶到后台。
-            return g_interactive ? MA_ACTIVATE : MA_NOACTIVATE;
+            // 永远不激活。点面板只是"点一层贴纸"，游戏不能因此失焦。
+            return MA_NOACTIVATE;
 
         case WM_DESTROY:
             PostQuitMessage(0);
@@ -445,6 +505,15 @@ int OverlayMain() {
             // gui::OnFrame() 内部已经调过了，一个帧里调两次会把 pressed/released
             // 的边沿状态清掉，点击就丢了。
             UpdateInputMode();
+            // 面板打开期间每秒重申一次鼠标归属：有些引擎发现鼠标设备变化
+            // 会自己重新注册 Raw Input，把我们的冻结顶掉
+            if (gui::Visible()) {
+                const ULONGLONG now = GetTickCount64();
+                if (now >= g_raw_reassert_at) {
+                    g_raw_reassert_at = now + 1000;
+                    HookMouseToOverlay(true);
+                }
+            }
             RenderOnce();
 
             // 合成解锁键之后确认一次效果，方便判断这个绑定到底管不管用
@@ -529,6 +598,8 @@ int OverlayMain() {
         }
     }
 
+    // 退出前必须把鼠标 Raw Input 还给游戏，否则游戏视角会一直锁着
+    HookMouseToOverlay(false);
     render::Shutdown();
     if (g_overlay != nullptr) DestroyWindow(g_overlay);
     g_overlay = nullptr;
