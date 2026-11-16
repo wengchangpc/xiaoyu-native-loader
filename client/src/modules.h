@@ -18,5 +18,9 @@ void Tick();
 // 立刻松开所有由本模块按下的键/鼠标（面板打开、关闭、退出时调用）
 void ReleaseAll();
 
+// 这个模块名对应的功能是否真的实现了（GUI 自己那一套也算）。
+// 用来在切换模块时提示"还没实现"，免得用户对着空壳开关发懵。
+bool Implemented(const wchar_t* english_name);
+
 }  // namespace modules
 }  // namespace xiaoyu

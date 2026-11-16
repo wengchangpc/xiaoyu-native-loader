@@ -853,6 +853,9 @@ void TickNotifications() {
         g_prev_on[i] = cur;
         NotifyItem n;
         n.text = FeatName(i);
+        if (!modules::Implemented(kFeatures[i].en)) {
+            n.text += L"  ·  未实现";
+        }
         n.on = (cur != 0);
         n.at = now;
         g_notifies.push_back(n);

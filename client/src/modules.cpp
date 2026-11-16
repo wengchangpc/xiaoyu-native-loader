@@ -126,6 +126,8 @@ void TapMouse() {
 bool g_sprint_held = false;
 ULONGLONG g_ac_next_click = 0;
 ULONGLONG g_afk_next = 0;
+ULONGLONG g_afk_release_at = 0;
+bool g_afk_walking = false;
 ULONGLONG g_fish_next = 0;
 int g_fish_phase = 0;   // 0=还没抛竿 1=等鱼 2=收杆后冷却
 
@@ -186,15 +188,17 @@ void TickSprint() {
     }
 }
 
-// AntiAFK：每隔 interval 秒跳一下。跳跃是所有动作里最不容易把自己弄死的，
-// 把"前进"换成"跳"就是为了不让人掉进岩浆。
+// AntiAFK：对齐原版 misc/antiafk.py —— 每 interval 秒给一次
+// 「小幅位移 + 随机转视角」，让服务器看到有人在操作。
+// 原版是直接 SetMotion + SetRot，我们只能合成输入：鼠标相对移动 = 转视角，
+// 短按 W = 位移。位移时间压到 90ms，避免挂机时自己走进岩浆。
 void TickAntiAfk() {
     const int fi = FindFeature(L"AntiAFK");
     if (!Active(fi)) {
         g_afk_next = 0;
         return;
     }
-    float interval = ParamOf(fi, L"interval", 30.0f);
+    float interval = ParamOf(fi, L"interval", 5.0f);
     if (interval < 1.0f) interval = 1.0f;
 
     const ULONGLONG now = GetTickCount64();
@@ -202,10 +206,31 @@ void TickAntiAfk() {
         g_afk_next = now + (ULONGLONG)(interval * 1000.0f);
         return;
     }
-    if (now >= g_afk_next) {
-        g_afk_next = now + (ULONGLONG)(interval * 1000.0f);
-        TapKey(VK_SPACE);
-    }
+    if (now < g_afk_next) return;
+    g_afk_next = now + (ULONGLONG)(interval * 1000.0f);
+
+    // 视角：±30° 偏航、±15° 俯仰，和原版 random.uniform 的范围一致
+    const int dx = (rand() % 61) - 30;
+    const int dy = (rand() % 31) - 15;
+    INPUT in = {};
+    in.type = INPUT_MOUSE;
+    in.mi.dx = dx;
+    in.mi.dy = dy;
+    in.mi.dwFlags = MOUSEEVENTF_MOVE;
+    SendInput(1, &in, sizeof(in));
+
+    // 位移：短按 W
+    HoldKey((WORD)'W');
+    g_afk_release_at = now + 90;
+    g_afk_walking = true;
+}
+
+// 结束 AntiAFK 那次短按（放在 Tick 里统一收尾，避免 Sleep 卡住渲染）
+void TickAntiAfkRelease() {
+    if (!g_afk_walking) return;
+    if (GetTickCount64() < g_afk_release_at) return;
+    UnholdKey((WORD)'W');
+    g_afk_walking = false;
 }
 
 // AutoFish：抛竿 → 等 max_wait → 收杆 → 冷却 recast_delay 后再抛。
@@ -246,6 +271,25 @@ void TickAutoFish() {
 
 }  // namespace
 
+bool Implemented(const wchar_t* english_name) {
+    if (english_name == nullptr) return false;
+    // 纯 GUI / HUD 类：本来就不需要游戏交互
+    static const wchar_t* kGuiOnly[] = {
+        L"ClickGui", L"ConfigSave", L"FPS",      L"CPS",
+        L"ArrayList", L"Keystrokes", L"Notification", L"HUD",
+        L"TitleRender", L"Debug",
+    };
+    for (size_t i = 0; i < sizeof(kGuiOnly) / sizeof(kGuiOnly[0]); ++i) {
+        if (wcscmp(kGuiOnly[i], english_name) == 0) return true;
+    }
+    // 靠输入合成实现的
+    static const wchar_t* kSynth[] = {L"AC", L"Sprint", L"AntiAFK", L"AutoFish"};
+    for (size_t i = 0; i < sizeof(kSynth) / sizeof(kSynth[0]); ++i) {
+        if (wcscmp(kSynth[i], english_name) == 0) return true;
+    }
+    return false;
+}
+
 void ReleaseAll() {
     for (int i = g_held_n - 1; i >= 0; --i) {
         UnholdKey(g_held[i]);
@@ -256,6 +300,7 @@ void ReleaseAll() {
     g_ac_next_click = 0;
     g_fish_phase = 0;
     g_fish_next = 0;
+    g_afk_walking = false;
 }
 
 void Tick() {
@@ -279,6 +324,7 @@ void Tick() {
     TickAutoClicker();
     TickSprint();
     TickAntiAfk();
+    TickAntiAfkRelease();
     TickAutoFish();
 }
 
