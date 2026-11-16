@@ -71,9 +71,17 @@ void SetPhysicalWanted(bool on);
 // 物理（非注入）左键是否按下
 bool PhysLeftDown();
 
-// 相对模式：面板打开期间我们把鼠标的 Raw Input 接到自己窗口上（游戏因此
-// 收不到鼠标位移，视角冻结），坐标就不能再用 GetCursorPos 了 —— 游戏会把
-// 光标按在屏幕中间。改成用 Raw Input 的相对位移自己累加一个虚拟光标。
+// 物理（非注入）空格是否按下。
+// 跳跃类模块要成对注入 SPACE 的 UP/DOWN 来"顶跳"，注入的 DOWN 会把
+// GetAsyncKeyState 写成按下，玩家松手后仍读到按下 —— 所以只能靠
+// WH_KEYBOARD_LL + LLKHF_INJECTED 过滤来拿真实状态。
+void SetPhysicalKeyWanted(bool on);
+bool PhysSpaceDown();
+
+// 相对模式：早期版本为了让面板有个能动的光标而引入的方案。
+// 现在已确认：接管游戏的 Raw Input 只影响游戏，Windows 仍在正常移动
+// 系统光标，GetCursorPos 是准的 —— 再自绘一个光标就会出现"两个光标一起动"。
+// 这套接口保留下来备查，当前没有任何调用点，g_relative 恒为 false。
 void SetRelativeMode(bool on);
 bool RelativeMode();
 void AddMouseDelta(int dx, int dy);

@@ -276,5 +276,55 @@ void SetPhysicalWanted(bool on) {
 
 bool PhysLeftDown() { return g_phys_left != 0; }
 
+// ── 低级键盘钩子 ────────────────────────────────────────────────
+// 为什么必须要它：NoJumpDelay / AutoJumpSpam 要「按住空格时反复顶一次跳」，
+// 就得知道**物理上**空格是不是按着。GetAsyncKeyState 做不到 ——
+// 我们为了顶跳会成对注入 UP/DOWN，注入的 DOWN 会把状态表写成"按下"，
+// 玩家真松手之后我们仍然读到按下，于是空格被永久按住、人一直跳。
+// 和 AC 那边判物理左键是同一个坑，解法也一样：WH_KEYBOARD_LL +
+// LLKHF_INJECTED 过滤。只关心空格一个键，别的键原样放行。
+HHOOK g_kb_hook = nullptr;
+bool g_want_phys_key = false;
+volatile LONG g_phys_space = 0;
+
+LRESULT CALLBACK KeyHookProc(int code, WPARAM wp, LPARAM lp) {
+    if (code == HC_ACTION) {
+        const KBDLLHOOKSTRUCT* kb = reinterpret_cast<const KBDLLHOOKSTRUCT*>(lp);
+        if (kb != nullptr && (kb->flags & LLKHF_INJECTED) == 0) {
+            if (kb->vkCode == VK_SPACE) {
+                if (wp == WM_KEYDOWN || wp == WM_SYSKEYDOWN) {
+                    g_phys_space = 1;
+                } else if (wp == WM_KEYUP || wp == WM_SYSKEYUP) {
+                    g_phys_space = 0;
+                }
+            }
+        }
+    }
+    return CallNextHookEx(nullptr, code, wp, lp);
+}
+
+void UpdateKeyHook() {
+    if (g_want_phys_key && g_kb_hook == nullptr) {
+        g_kb_hook = SetWindowsHookExW(WH_KEYBOARD_LL, KeyHookProc, GetModuleHandleW(nullptr), 0);
+        if (g_kb_hook == nullptr) {
+            LogLine("[input] 装键盘钩子失败 err=%lu", (unsigned long)GetLastError());
+        } else {
+            LogLine("[input] 键盘钩子已挂上（只跟踪空格物理状态）");
+        }
+    } else if (!g_want_phys_key && g_kb_hook != nullptr) {
+        UnhookWindowsHookEx(g_kb_hook);
+        g_kb_hook = nullptr;
+        g_phys_space = 0;
+    }
+}
+
+void SetPhysicalKeyWanted(bool on) {
+    if (g_want_phys_key == on) return;
+    g_want_phys_key = on;
+    UpdateKeyHook();
+}
+
+bool PhysSpaceDown() { return g_phys_space != 0; }
+
 }  // namespace input
 }  // namespace xiaoyu

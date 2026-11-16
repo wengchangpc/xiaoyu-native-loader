@@ -10,6 +10,7 @@
 
 #include <windows.h>
 #include <cwchar>
+#include <wchar.h>
 #include <stdlib.h>
 
 #include "config.h"
@@ -122,6 +123,37 @@ void TapMouse() {
 // MSLLHOOKSTRUCT.flags 里的 LLMHF_INJECTED 把注入事件过滤掉）。
 // 钩子的开关也归 input 管，这里只负责提需求。
 
+// ── 成对注入 ────────────────────────────────────────────────────
+// 一次 SendInput 里把「松开 + 按下」一起发出去，中间不留空窗。
+// 游戏收到的是两次独立的按键事件，于是"按住不放"变成"又按了一下"。
+void SendKeyUpDown(WORD vk) {
+    const WORD sc = (WORD)MapVirtualKeyW(vk, MAPVK_VK_TO_VSC);
+    INPUT in[2] = {};
+    in[0].type = INPUT_KEYBOARD;
+    in[0].ki.wVk = vk;
+    in[0].ki.wScan = sc;
+    in[0].ki.dwFlags = KEYEVENTF_KEYUP;
+    in[1].type = INPUT_KEYBOARD;
+    in[1].ki.wVk = vk;
+    in[1].ki.wScan = sc;
+    SendInput(2, in, sizeof(INPUT));
+}
+
+// 逐字符按 Unicode 注入。中文没法用虚拟键码表示，只能走 KEYEVENTF_UNICODE，
+// 让系统在目标线程里合成 WM_CHAR。基岩版的聊天输入框吃的是 WM_CHAR，
+// 所以这条路能打出中文（用 VkKeyScan 走键盘布局就会被转成问号）。
+void TypeUnicode(const wchar_t* s) {
+    for (const wchar_t* p = s; *p != 0; ++p) {
+        INPUT in[2] = {};
+        in[0].type = INPUT_KEYBOARD;
+        in[0].ki.wScan = (WORD)*p;
+        in[0].ki.dwFlags = KEYEVENTF_UNICODE;
+        in[1] = in[0];
+        in[1].ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP;
+        SendInput(2, in, sizeof(INPUT));
+    }
+}
+
 // ── 各模块状态 ──────────────────────────────────────────────────
 bool g_sprint_held = false;
 ULONGLONG g_ac_next_click = 0;
@@ -130,6 +162,24 @@ ULONGLONG g_afk_release_at = 0;
 bool g_afk_walking = false;
 ULONGLONG g_fish_next = 0;
 int g_fish_phase = 0;   // 0=还没抛竿 1=等鱼 2=收杆后冷却
+
+// NoJumpDelay
+ULONGLONG g_jump_next = 0;
+
+// Spammer：0=等下一轮 1=已按 T 等聊天框 2=已打字等回车
+ULONGLONG g_spam_next = 0;
+int g_spam_phase = 0;
+ULONGLONG g_spam_step_at = 0;
+
+// Spin
+ULONGLONG g_spin_next = 0;
+int g_spin_dir = 1;
+ULONGLONG g_spin_flip_at = 0;
+
+// AttackSprintReset
+bool g_prev_phys_left = false;
+ULONGLONG g_sprint_suppress_until = 0;
+bool g_asr_warned = false;
 
 // AC（自动连点）：玩家按住左键时，按 cps_min~cps_max 的节奏连点。
 //
@@ -178,7 +228,10 @@ void TickAutoClicker() {
 // 真实的 W，会和玩家自己的按键打架）。这里选按住 Ctrl，松 W 就松 Ctrl。
 void TickSprint() {
     const int fi = FindFeature(L"Sprint");
-    const bool want = Active(fi) && input::KeyDown((int)'W');
+    bool want = Active(fi) && input::KeyDown((int)'W');
+    // AttackSprintReset 打中目标后要把疾跑掐掉几个 tick，
+    // 这时候就算 W 还按着也不能立刻把它按回去，否则重置等于没做。
+    if (want && GetTickCount64() < g_sprint_suppress_until) want = false;
     if (want && !g_sprint_held) {
         HoldKey(VK_LCONTROL);
         g_sprint_held = true;
@@ -269,6 +322,158 @@ void TickAutoFish() {
     }
 }
 
+// NoJumpDelay / AutoJumpSpam 共用：「按住空格时反复顶一次跳」。
+// 原版是 on_tick 里每 tick 调一次 clientApi.SimulateJump()，这里没有引擎 API，
+// 只能把「按住」拆成「松开+按下」重新发一遍，游戏就会当成又按了一下。
+// 触发判据用物理按键状态（WH_KEYBOARD_LL），不能用 GetAsyncKeyState ——
+// 我们自己注入的 DOWN 会把它写脏，玩家松手后空格会被永久按住。
+void TickJumpSpam() {
+    const int fi = FindFeature(L"NoJumpDelay");
+    if (!Active(fi) || !input::PhysSpaceDown()) {
+        g_jump_next = 0;
+        return;
+    }
+    const ULONGLONG now = GetTickCount64();
+    if (g_jump_next == 0) g_jump_next = now;
+    if (now < g_jump_next) return;
+    g_jump_next = now + 50;   // 20Hz，和原版 on_tick 同频
+    SendKeyUpDown(VK_SPACE);
+}
+
+// Spammer：对齐原版 misc/spammer.py —— 每 delay 秒发一条「文本 + 随机后缀」。
+// 原版直接调 _voice_trans.sendChatMsg，我们走界面：T 开聊天框 → 打字 → 回车。
+// 默认文本沿用原版，random_len=0 时不加后缀。
+void TickSpammer() {
+    const int fi = FindFeature(L"Spammer");
+    if (!Active(fi)) {
+        g_spam_phase = 0;
+        g_spam_next = 0;
+        return;
+    }
+    float delay = ParamOf(fi, L"delay_seconds", 5.0f);
+    if (delay < 0.1f) delay = 0.1f;
+    int rnd_len = (int)ParamOf(fi, L"random_len", 4.0f);
+    if (rnd_len < 0) rnd_len = 0;
+    if (rnd_len > 64) rnd_len = 64;
+
+    const ULONGLONG now = GetTickCount64();
+    if (g_spam_phase == 0) {
+        if (g_spam_next == 0) {
+            g_spam_next = now + (ULONGLONG)(delay * 1000.0f);
+            return;
+        }
+        if (now < g_spam_next) return;
+        TapKey('T');                       // 打开聊天框
+        g_spam_phase = 1;
+        g_spam_step_at = now + 160;        // 等界面出来
+        return;
+    }
+    if (now < g_spam_step_at) return;
+
+    if (g_spam_phase == 1) {
+        wchar_t msg[160];
+        // 原版默认文本。写死是因为 GUI 里没有文本框，只有延迟/后缀长度两个参数。
+        wcscpy_s(msg, L"Xiaoyu入侵服务器");
+        if (rnd_len > 0) {
+            static const wchar_t kAlnum[] =
+                L"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+            const int base = (int)wcslen(msg);
+            const int room = (int)(sizeof(msg) / sizeof(msg[0])) - base - 2;
+            if (room > 2) {
+                int n = rnd_len < room - 1 ? rnd_len : room - 1;
+                msg[base] = L' ';
+                for (int i = 0; i < n; ++i) {
+                    msg[base + 1 + i] = kAlnum[rand() % 62];
+                }
+                msg[base + 1 + n] = 0;
+            }
+        }
+        TypeUnicode(msg);
+        g_spam_phase = 2;
+        g_spam_step_at = now + 140;        // 等输入法把字吃进去
+        return;
+    }
+
+    // phase 2：回车发出去
+    TapKey(VK_RETURN);
+    g_spam_phase = 0;
+    g_spam_next = now + (ULONGLONG)(delay * 1000.0f);
+    LogLine("[mod] Spammer 已发送（间隔 %.1f 秒）", delay);
+}
+
+// Spin：对齐原版 combat/spin.py 的「持续自转」。
+// 差别要说清楚：原版是**静默**转（DepartCamera + LockLocalPlayerRot，自己画面不动，
+// 只有服务端/别人看到你在转）。那需要改玩家的实际旋转，必须走内存。
+// 这里只能合成鼠标相对位移，等于真的把镜头转起来 —— 自己画面会跟着转。
+// speed 是「每 tick 转多少度」，按 1 鼠标计数 ≈ 0.25 度估，灵敏度不同会有偏差。
+void TickSpin() {
+    const int fi = FindFeature(L"Spin");
+    if (!Active(fi)) {
+        g_spin_next = 0;
+        g_spin_flip_at = 0;
+        return;
+    }
+    float speed = ParamOf(fi, L"speed", 37.3f);
+    if (speed < 1.0f) speed = 1.0f;
+    if (speed > 60.0f) speed = 60.0f;
+    float jitter = ParamOf(fi, L"jitter", 0.15f);
+    if (jitter < 0.0f) jitter = 0.0f;
+    if (jitter > 10.0f) jitter = 10.0f;
+
+    const ULONGLONG now = GetTickCount64();
+    if (g_spin_next == 0) g_spin_next = now;
+    if (now < g_spin_next) return;
+    g_spin_next = now + 50;   // 20Hz
+
+    // flip：每 3 秒掉一次头，纯匀速转太容易被看出是机器
+    if (ParamOf(fi, L"flip", 0.0f) > 0.5f) {
+        if (g_spin_flip_at == 0) g_spin_flip_at = now + 3000;
+        if (now >= g_spin_flip_at) {
+            g_spin_flip_at = now + 3000;
+            g_spin_dir = -g_spin_dir;
+        }
+    }
+
+    const float wobble = 1.0f + jitter * 0.1f * ((float)(rand() % 1000) / 1000.0f - 0.5f);
+    int dx = (int)(speed * 4.0f * wobble * (float)g_spin_dir);
+    if (dx > -1 && dx < 1) dx = g_spin_dir >= 0 ? 1 : -1;
+
+    INPUT in = {};
+    in.type = INPUT_MOUSE;
+    in.mi.dx = dx;
+    in.mi.dwFlags = MOUSEEVENTF_MOVE;
+    SendInput(1, &in, sizeof(in));
+}
+
+// AttackSprintReset：对齐原版 combat/attacksprintreset.py ——
+// 命中那一刻取消疾跑，并保持 4 个 tick（原版 _suppress_ticks = 4）。
+// 我们没有「命中」事件，用物理左键按下当攻击信号（注入的点击不算）。
+// 能掐掉的只有**我们自己**按住的那个 Ctrl；如果玩家是自己按着 Ctrl 疾跑，
+// 这里再注入一次 Ctrl 松开会和他打架，所以那种情况不动手，只记一次日志。
+void TickAttackSprintReset() {
+    const int fi = FindFeature(L"AttackSprintReset");
+    const bool on = Active(fi);
+    const bool down = input::PhysLeftDown();
+    const bool pressed = down && !g_prev_phys_left;
+    g_prev_phys_left = down;
+
+    if (!on) {
+        if (g_sprint_suppress_until != 0) g_sprint_suppress_until = 0;
+        g_asr_warned = false;
+        return;
+    }
+    if (!pressed) return;
+
+    if (g_sprint_held) {
+        g_sprint_suppress_until = GetTickCount64() + 200;   // 4 tick
+        UnholdKey(VK_LCONTROL);
+        g_sprint_held = false;
+    } else if (!g_asr_warned) {
+        g_asr_warned = true;
+        LogLine("[mod] AttackSprintReset 需要「自动疾跑」同时开启才能掐断疾跑");
+    }
+}
+
 }  // namespace
 
 bool Implemented(const wchar_t* english_name) {
@@ -283,7 +488,10 @@ bool Implemented(const wchar_t* english_name) {
         if (wcscmp(kGuiOnly[i], english_name) == 0) return true;
     }
     // 靠输入合成实现的
-    static const wchar_t* kSynth[] = {L"AC", L"Sprint", L"AntiAFK", L"AutoFish"};
+    static const wchar_t* kSynth[] = {
+        L"AC", L"Sprint", L"AntiAFK", L"AutoFish",
+        L"NoJumpDelay", L"Spammer", L"Spin", L"AttackSprintReset",
+    };
     for (size_t i = 0; i < sizeof(kSynth) / sizeof(kSynth[0]); ++i) {
         if (wcscmp(kSynth[i], english_name) == 0) return true;
     }
@@ -301,6 +509,11 @@ void ReleaseAll() {
     g_fish_phase = 0;
     g_fish_next = 0;
     g_afk_walking = false;
+    g_jump_next = 0;
+    g_spam_phase = 0;
+    g_spam_next = 0;
+    g_spin_next = 0;
+    g_sprint_suppress_until = 0;
 }
 
 void Tick() {
@@ -313,19 +526,31 @@ void Tick() {
     // 前台被抢回去之后面板就点不动了。
     if (gui::Visible()) {
         input::SetPhysicalWanted(false);   // 面板打开时把钩子摘掉，别让输入多绕一圈
+        input::SetPhysicalKeyWanted(false);
         ReleaseAll();
         return;
     }
-    // AC 打开时才要求挂物理鼠标钩子，其余时间不增加任何输入延迟
+    // 只有真正需要"物理按键状态"的模块开着时才挂钩子，其余时间不给输入加任何额外环节
     {
         const int ac = FindFeature(L"AC");
-        input::SetPhysicalWanted(ac >= 0 && cfg::ModuleOn(ac) && !gui::Visible());
+        const int asr = FindFeature(L"AttackSprintReset");
+        const bool need_mouse = (ac >= 0 && cfg::ModuleOn(ac)) ||
+                                (asr >= 0 && cfg::ModuleOn(asr));
+        input::SetPhysicalWanted(need_mouse);
+    }
+    {
+        const int njd = FindFeature(L"NoJumpDelay");
+        input::SetPhysicalKeyWanted(njd >= 0 && cfg::ModuleOn(njd));
     }
     TickAutoClicker();
+    TickAttackSprintReset();
     TickSprint();
     TickAntiAfk();
     TickAntiAfkRelease();
     TickAutoFish();
+    TickJumpSpam();
+    TickSpammer();
+    TickSpin();
 }
 
 }  // namespace modules
