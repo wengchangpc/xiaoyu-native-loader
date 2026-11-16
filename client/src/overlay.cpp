@@ -47,6 +47,7 @@ bool g_running = false;
 ULONGLONG g_unlock_check_at = 0;  // 合成解锁键之后多久去确认一次效果
 int g_unlock_vk = 0;              // 这次合成的是哪个键
 int g_unlock_stage = 0;           // 0=空闲 1=已 SendInput 2=已投递窗口消息
+ULONGLONG g_release_check_at = 0;  // 关面板交还焦点之后，过一会儿确认游戏有没有抓回鼠标
 
 struct FindCtx {
     DWORD pid;
@@ -143,6 +144,71 @@ void PostKeyToGame(int vk, bool down) {
     PostMessageW(g_game, msg, (WPARAM)vk, lp);
 }
 
+// 把前台/焦点强行交给 target。
+// 关键前提：覆盖窗口是注入到游戏进程里创建的，和游戏窗口同属一个进程，
+// 所以这是进程内的焦点切换，不受 SetForegroundWindow 的跨进程限制。
+// 跨线程设焦点必须先 AttachThreadInput —— 焦点是"线程级"的概念。
+void ForceForeground(HWND target) {
+    if (target == nullptr || !IsWindow(target)) return;
+
+    HWND fg = GetForegroundWindow();
+    const DWORD my_tid = GetCurrentThreadId();
+    const DWORD fg_tid = (fg != nullptr) ? GetWindowThreadProcessId(fg, nullptr) : 0;
+    const DWORD tg_tid = GetWindowThreadProcessId(target, nullptr);
+
+    // 两段 attach：前台线程（否则 SetForegroundWindow 可能被拒）
+    // 和 target 线程（否则 SetFocus 跨线程无效）。
+    bool a_fg = (fg_tid != 0 && fg_tid != my_tid) &&
+                AttachThreadInput(my_tid, fg_tid, TRUE) != FALSE;
+    bool a_tg = (tg_tid != 0 && tg_tid != my_tid && tg_tid != fg_tid) &&
+                AttachThreadInput(my_tid, tg_tid, TRUE) != FALSE;
+
+    if (!IsWindowVisible(target)) ShowWindow(target, SW_SHOWNA);
+    BringWindowToTop(target);
+    SetForegroundWindow(target);
+    SetActiveWindow(target);
+    SetFocus(target);
+
+    if (a_tg) AttachThreadInput(my_tid, tg_tid, FALSE);
+    if (a_fg) AttachThreadInput(my_tid, fg_tid, FALSE);
+}
+
+// 打开面板：抢前台。游戏收到 WM_ACTIVATE(WA_INACTIVE) 后会自己放开鼠标捕获，
+// 这是它自己的逻辑，不依赖任何键位绑定，也不会被反作弊的注入标记拦截。
+//
+// 为什么不再一上来就合成按键：实测两次 Alt 之后游戏停在"光标模式"里出不来，
+// 关掉面板也没法恢复视角。抢焦点是对称的 —— 焦点给谁，鼠标捕获就跟着谁。
+RECT g_game_rect_before = {};
+ULONGLONG g_rect_check_at = 0;
+
+void TakeForeground() {
+    g_game_rect_before = RECT{};
+    if (g_game != nullptr && IsWindow(g_game)) {
+        GetWindowRect(g_game, &g_game_rect_before);
+    }
+    g_rect_check_at = GetTickCount64() + 600;
+    ForceForeground(g_overlay);
+    LogLine("[overlay] 接管前台 fg=%p overlay=%p clipped=%d", (void*)GetForegroundWindow(),
+            (void*)g_overlay, input::IsCursorClipped() ? 1 : 0);
+}
+
+// 关闭面板：把前台还给游戏窗口，并顺手把光标放回客户区中心 ——
+// 游戏重新捕获鼠标时一般也是从中心开始算相对位移，先摆正少一次视角跳变。
+void ReleaseToGame() {
+    if (g_game == nullptr || !IsWindow(g_game)) return;
+    ForceForeground(g_game);
+    RECT rc = {};
+    if (GetClientRect(g_game, &rc)) {
+        POINT c;
+        c.x = (rc.right - rc.left) / 2;
+        c.y = (rc.bottom - rc.top) / 2;
+        ClientToScreen(g_game, &c);
+        SetCursorPos(c.x, c.y);
+    }
+    g_release_check_at = GetTickCount64() + 400;
+    LogLine("[overlay] 前台已交还游戏 hwnd=%p", (void*)g_game);
+}
+
 // verify：只有"打开面板"这次需要回头看效果。关面板时按完就把鼠标还给游戏了，
 // 这时候去查裁剪状态只会得到 1（游戏重新抓住），日志会误导人。
 void ToggleGameCursorRelease(const char* why, bool verify) {
@@ -170,29 +236,32 @@ void UpdateInputMode() {
     // 注意：SDK 里没有 GWLP_EXSTYLE 这个常量。
     // GWLP_* 那一套只覆盖指针大小的项（WNDPROC / HINSTANCE / HWNDPARENT /
     // USERDATA / ID），style 和 exstyle 永远是 32 位的 GWL_*。
-    LONG ex = GetWindowLongW(g_overlay, GWL_EXSTYLE);
+    // 面板打开时要能拿到焦点（点面板就等于点自己），所以连 NOACTIVATE 一起去掉；
+    // 关掉时两边都加回来，恢复成"看得见但完全不参与输入"的纯覆盖层。
+    LONG_PTR ex = GetWindowLongPtrW(g_overlay, GWL_EXSTYLE);
     if (want) {
-        ex &= ~(LONG)WS_EX_TRANSPARENT;
+        ex &= ~(LONG_PTR)(WS_EX_TRANSPARENT | WS_EX_NOACTIVATE);
     } else {
-        ex |= (LONG)WS_EX_TRANSPARENT;
+        ex |= (LONG_PTR)(WS_EX_TRANSPARENT | WS_EX_NOACTIVATE);
     }
-    SetWindowLongW(g_overlay, GWL_EXSTYLE, ex);
+    SetWindowLongPtrW(g_overlay, GWL_EXSTYLE, ex);
 
     SetWindowPos(g_overlay, nullptr, 0, 0, 0, 0,
                  SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE |
                      SWP_FRAMECHANGED);
 
     if (want) {
-        // 面板打开时解除游戏的鼠标裁剪，免得光标被困在窗口里
-        ClipCursor(nullptr);
-        // 替用户按一下游戏自己的"释放鼠标"键（内部会把校验时间点排好）
+        // 抢前台：游戏自己会放开鼠标，不需要合成任何键
+        if (cfg::TakeFocus()) TakeForeground();
+        // 兜底路径：有些客户端失焦也不会放开，那才轮到合成键（默认关）
         if (cfg::AutoUnlock()) ToggleGameCursorRelease("打开面板", true);
         RegisterWheelSink(true);
         // 顺便让渲染层在下一帧做一次像素自检，把面板的实际绘制范围写进日志
         render::RequestSelfCheck();
     } else {
         RegisterWheelSink(false);
-        // 关掉面板时把鼠标交回游戏，不然游戏里会一直没有视角控制
+        // 把前台还给游戏，视角控制立刻恢复
+        if (cfg::TakeFocus()) ReleaseToGame();
         if (cfg::AutoUnlock()) ToggleGameCursorRelease("关闭面板", false);
     }
     LogLine("[overlay] 输入模式 -> %s", want ? "接管鼠标" : "点击穿透");
@@ -229,6 +298,10 @@ void FollowGameWindow() {
 
     bool moved = (tl.x != g_cached_x || tl.y != g_cached_y);
     bool resized = (w != g_cached_w || h != g_cached_h);
+    // 最小化时客户区会变成 0x0，这时候去 Resize 交换链/重建 DIB 只会崩，
+    // 直接跳过，等窗口恢复再跟。
+    if (w < 16 || h < 16) return;
+
     if (moved || resized) {
         SetWindowPos(g_overlay, HWND_TOPMOST, tl.x, tl.y, w, h,
                      SWP_NOACTIVATE | SWP_NOOWNERZORDER);
@@ -278,7 +351,9 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 1;  // 内容全由 DComp 合成，别让 GDI 刷一层底色
 
         case WM_MOUSEACTIVATE:
-            return MA_NOACTIVATE;  // 点面板不抢焦点，游戏不会因此暂停
+            // 面板打开时允许激活（这样才能把前台从游戏手里拿过来），
+            // 收起时保持不激活，免得误点把游戏顶到后台。
+            return g_interactive ? MA_ACTIVATE : MA_NOACTIVATE;
 
         case WM_DESTROY:
             PostQuitMessage(0);
@@ -432,6 +507,29 @@ int OverlayMain() {
                 } else {
                     LogLine("[overlay] 解锁检查：cursor_clipped=%d", clipped ? 1 : 0);
                 }
+            }
+
+            // 抢焦点后确认：客户端有没有因为失焦把窗口改成全屏 / 缩小
+            if (g_rect_check_at != 0 && GetTickCount64() >= g_rect_check_at) {
+                g_rect_check_at = 0;
+                RECT now = {};
+                if (g_game != nullptr && IsWindow(g_game) && GetWindowRect(g_game, &now)) {
+                    const int ow = g_game_rect_before.right - g_game_rect_before.left;
+                    const int oh = g_game_rect_before.bottom - g_game_rect_before.top;
+                    const int nw = now.right - now.left;
+                    const int nh = now.bottom - now.top;
+                    if (ow != nw || oh != nh) {
+                        LogLine("[overlay] 注意：抢焦点后游戏窗口尺寸 %dx%d -> %dx%d，"
+                                "客户端自己改了显示模式", ow, oh, nw, nh);
+                    }
+                }
+            }
+
+            // 关面板交还焦点后确认一次：游戏有没有重新把鼠标抓回去
+            if (g_release_check_at != 0 && GetTickCount64() >= g_release_check_at) {
+                g_release_check_at = 0;
+                LogLine("[overlay] 交还焦点后检查：cursor_clipped=%d（1 表示游戏已重新捕获鼠标）",
+                        input::IsCursorClipped() ? 1 : 0);
             }
 
             ULONGLONG now = GetTickCount64();

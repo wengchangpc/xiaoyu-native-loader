@@ -41,7 +41,14 @@ void SetHudEnabled(int feature_index, bool on);
 bool BlockInput();
 void SetBlockInput(bool v);
 
-// 打开面板时是否替用户按一下游戏的"释放鼠标"键（默认开）。
+// 打开面板时是否把前台从游戏手里接过来（默认开）。
+// 游戏失焦后会自己放开鼠标捕获，关掉面板再把前台还回去，视角立刻恢复。
+// 这是主路径，不依赖任何键位绑定。
+bool TakeFocus();
+void SetTakeFocus(bool v);
+
+// 兼容旧行为：合成游戏的"释放鼠标"键。默认关 —— 实测连按两次容易把游戏
+// 卡在光标模式里出不来（关了面板也不能转视角）。只有 focus=0 且确实需要时才开。
 // 如果哪天游戏改绑定、或合成的 Alt 反而把鼠标锁回去，把它设成 0 就能退回手动。
 bool AutoUnlock();
 void SetAutoUnlock(bool v);

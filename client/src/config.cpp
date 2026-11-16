@@ -33,10 +33,11 @@ struct PanelConf {
 };
 PanelConf g_panels[GROUP_COUNT];
 
-float g_scale = 2.0f;
+float g_scale = 0.0f;   // 0 = 自动：按窗口大小算缩放，见 gui.cpp 的 AutoScale()
 bool g_chinese = true;
 bool g_block_input = true;
-bool g_auto_unlock = true;
+bool g_auto_unlock = false;
+bool g_take_focus = true;
 int g_unlock_key = 0xA4;  // VK_LMENU
 
 bool g_dirty = false;
@@ -132,8 +133,14 @@ void Load() {
         ++n;
 
         if (key == L"scale") {
+            // 0 表示"自动"（按窗口大小算）。老版本写过 scale=2.000，
+            // 那个值会一直把 GUI 撑得很大，这里允许用户明确写 0 退回自动。
             float v = (float)_wtof(value.c_str());
-            if (v >= 0.8f && v <= 6.0f) g_scale = v;
+            if (v == 0.0f) {
+                g_scale = 0.0f;
+            } else if (v >= 0.8f && v <= 6.0f) {
+                g_scale = v;
+            }
             continue;
         }
         if (key == L"chinese") {
@@ -142,6 +149,10 @@ void Load() {
         }
         if (key == L"blockinput") {
             g_block_input = (_wtoi(value.c_str()) != 0);
+            continue;
+        }
+        if (key == L"focus") {
+            g_take_focus = (_wtoi(value.c_str()) != 0);
             continue;
         }
         if (key == L"unlock") {
@@ -215,6 +226,7 @@ void Save() {
     fwprintf(f, L"scale=%.3f\n", g_scale);
     fwprintf(f, L"chinese=%d\n", g_chinese ? 1 : 0);
     fwprintf(f, L"blockinput=%d\n", g_block_input ? 1 : 0);
+    fwprintf(f, L"focus=%d\n", g_take_focus ? 1 : 0);
     fwprintf(f, L"unlock=%d\n", g_auto_unlock ? 1 : 0);
     fwprintf(f, L"unlockkey=%d\n", g_unlock_key);
 
@@ -339,6 +351,13 @@ void SetHudEnabled(int feature_index, bool on) { SetModuleOn(feature_index, on);
 bool BlockInput() { return g_block_input; }
 void SetBlockInput(bool v) {
     g_block_input = v;
+    MarkDirty();
+}
+
+bool TakeFocus() { return g_take_focus; }
+void SetTakeFocus(bool v) {
+    if (g_take_focus == v) return;
+    g_take_focus = v;
     MarkDirty();
 }
 

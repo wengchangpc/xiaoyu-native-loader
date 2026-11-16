@@ -130,6 +130,69 @@ float GroupContentHeight(int gi) {
     return h;
 }
 
+// 面板缩放。原版 nilore 是 120 单位宽的设计，单位乘缩放得到像素。
+// 以前默认写死 2.0，7 个分类在 1231x741 的窗口里要摆成 4 列 2 行，
+// 高度还得吃满 64% —— 打开就是"一屏幕面板"。现在默认跟随窗口尺寸，
+// 以 1040x660 为基准取两方向里较小的比例，并在 0.85~1.7 之间夹住。
+float AutoScale() {
+    const float w = (float)render::Width();
+    const float h = (float)render::Height();
+    if (w < 100.0f || h < 100.0f) return 1.0f;
+    float sw = w / 1040.0f;
+    float sh = h / 660.0f;
+    float s = sw < sh ? sw : sh;
+    if (s < 0.85f) s = 0.85f;
+    if (s > 1.7f) s = 1.7f;
+    return s;
+}
+
+// 列宽按内容算：中文模块名比英文长，固定 120 单位会把名字和右侧箭头挤在一起。
+// 结果缓存起来，只在语言切换时重算 —— 每帧 Measure 116 条文本的开销不值得。
+float g_group_w[GROUP_COUNT] = {0.0f};
+bool g_group_w_ready = false;
+bool g_group_w_zh = false;
+
+void RebuildGroupWidths() {
+    if (g_group_w_ready && g_group_w_zh == cfg::Chinese()) return;
+
+    // DirectWrite 还没起来时 Measure 全是 0，这时候不能缓存
+    float probe = render::Measure(GroupName(0), 11.0f, true);
+    if (probe <= 0.0f) return;
+
+    for (int g = 0; g < GROUP_COUNT; ++g) {
+        float need = kPanelW;
+        for (int i = 0; i < kFeatureCount; ++i) {
+            if (kFeatures[i].group != g) continue;
+            // 8 左内边距 + 名字 + 20 给右侧展开箭头
+            float rw = 8.0f + render::Measure(FeatName(i), 10.5f, false) + 20.0f;
+            if (rw > need) need = rw;
+            const FeatureInfo& f = kFeatures[i];
+            for (int k = 0; k < f.paramCount; ++k) {
+                const ParamInfo& pi = kParams[f.paramFirst + k];
+                // 参数行：12 左 + 标签 + 48 给右侧的数值 / 开关 / 枚举
+                float pw = 12.0f + render::Measure(pi.label, 9.5f, false) + 48.0f;
+                if (pw > need) need = pw;
+            }
+        }
+        // 标题行：8 左 + 标题 + 22（折叠箭头 + 右边距）
+        float hw = 8.0f + render::Measure(GroupName(g), 11.0f, true) + 22.0f;
+        if (hw > need) need = hw;
+
+        if (need < kPanelW) need = kPanelW;
+        if (need > 200.0f) need = 200.0f;   // 太宽反而难看，超了就让名字自己截
+        g_group_w[g] = need;
+    }
+    g_group_w_ready = true;
+    g_group_w_zh = cfg::Chinese();
+    float wmin = 1e9f, wmax = 0.0f;
+    for (int g = 0; g < GROUP_COUNT; ++g) {
+        if (g_group_w[g] <= 0.0f) continue;
+        if (g_group_w[g] < wmin) wmin = g_group_w[g];
+        if (g_group_w[g] > wmax) wmax = g_group_w[g];
+    }
+    LogLine("[gui] 列宽自适应：%.0f ~ %.0f 单位，缩放 %.2f", wmin, wmax, g_s);
+}
+
 int CountGroupFeatures(int gi) {
     int n = 0;
     for (int i = 0; i < kFeatureCount; ++i) {
@@ -140,11 +203,20 @@ int CountGroupFeatures(int gi) {
 
 // ── 布局：原版 _createNiloreLayout 的移植 ────────────────────────
 void LayoutPanels() {
-    g_s = cfg::Scale();
+    // 配置里 scale=0 表示自动，按窗口大小算；写了具体值就用用户的
+    float sc = cfg::Scale();
+    if (sc <= 0.0f) sc = AutoScale();
+    g_s = sc;
+    RebuildGroupWidths();
     const float pad = kPad * g_s;
     const float gap = kGap * g_s;
-    const float colW = kPanelW * g_s;
     const float headH = kHeadH * g_s;
+    // 估算每行能放几个时用最宽的那一列，宁可多折一行也不让列挤出去
+    float colW = kPanelW * g_s;
+    for (int g = 0; g < GROUP_COUNT; ++g) {
+        float cw = g_group_w[g] * g_s;
+        if (cw > colW) colW = cw;
+    }
     const float rowH = kRowH * g_s;
     const float viewW = (float)render::Width();
     const float viewH = (float)render::Height();
@@ -171,8 +243,10 @@ void LayoutPanels() {
         }
     }
 
-    float limit_body = viewH * 0.64f;
-    float availH = viewH - pad * 2.0f - gap * (row_count - 1);
+    // 单栏内容上限 52% 的高度，整体（含多行）只用可用高度的 82% ——
+    // 这样打开面板时四周一定留有游戏的画面，不会看起来像全屏菜单。
+    float limit_body = viewH * 0.52f;
+    float availH = (viewH - pad * 2.0f) * 0.82f - gap * (row_count - 1);
     float budget = (availH - row_count * (headH + 6.0f * g_s)) / (float)row_count;
     float max_body = limit_body < budget ? limit_body : budget;
     if (max_body < 0.0f) max_body = 0.0f;
@@ -184,12 +258,19 @@ void LayoutPanels() {
         if (CountGroupFeatures(g) == 0) continue;
         Panel p;
         p.group = g;
-        p.w = colW;
+        p.w = g_group_w[g] * g_s;
         p.row_count = CountGroupFeatures(g);
         p.max_body = max_body;
         p.content_h = GroupContentHeight(g) * g_s;
         p.collapsed = g_collapsed[g];
         p.scroll = g_scroll[g];
+        // 内容高度会随参数展开/收起变化，旧的 scroll 可能已经越界，
+        // 越界时拖动条会停在半空、列表底部出现空白，看着像"滚动坏了"。
+        float max_scroll = p.content_h - max_body;
+        if (max_scroll < 0.0f) max_scroll = 0.0f;
+        if (p.scroll > max_scroll) p.scroll = max_scroll;
+        if (p.scroll < 0.0f) p.scroll = 0.0f;
+        g_scroll[g] = p.scroll;
         g_panels.push_back(p);
         order.push_back(g);
     }
@@ -229,14 +310,17 @@ void LayoutPanels() {
     for (size_t r = 0; r < row_tops.size(); ++r) {
         int cnt = row_counts[r];
         int start = row_starts[r];
-        float row_w = cnt * colW + (cnt - 1) * gap;
+        float row_w = (float)(cnt - 1) * gap;
+        for (int k = 0; k < cnt; ++k) row_w += g_panels[start + k].w;
         float x0 = (viewW - row_w) * 0.5f;
         if (x0 < pad) x0 = pad;
         float ry = row_tops[r] + offset_y;
+        float cx = x0;
         for (int k = 0; k < cnt; ++k) {
             Panel& p = g_panels[start + k];
-            p.x = x0 + k * (colW + gap);
+            p.x = cx;
             p.y = ry;
+            cx += p.w + gap;
             float sx, sy;
             bool col = false;
             if (cfg::PanelPos(p.group, &sx, &sy, &col)) {
@@ -827,16 +911,35 @@ void DrawHud() {
     }
 }
 
+// 热键防抖：抢焦点/交还焦点的瞬间，GetAsyncKeyState 会短暂读到 0 再读到按下，
+// 于是一次右 Shift 被算成两次边沿 —— 表现就是"按一下没反应，按两下才关掉"，
+// 或者"窗口恢复了但 GUI 又打开了"。这里给一个 280ms 的静默期挡掉第二次。
+ULONGLONG g_toggle_guard_at = 0;
+
 void HandleHotkeys() {
     // GUI 打开/关闭
     if (input::HotkeyPressed()) {
-        SetVisible(!g_visible);
+        ULONGLONG now = GetTickCount64();
+        if (now >= g_toggle_guard_at) {
+            g_toggle_guard_at = now + 280;
+            SetVisible(!g_visible);
+        }
     }
 
-    // 缩放
+    // 缩放：自动模式下 g_s 是算出来的，不能拿 cfg::Scale()（0）去加减
     if (input::KeyDown(VK_CONTROL)) {
-        if (input::KeyPressed(VK_OEM_4)) cfg::SetScale(cfg::Scale() - 0.25f);
-        if (input::KeyPressed(VK_OEM_6)) cfg::SetScale(cfg::Scale() + 0.25f);
+        float base = g_s;
+        if (base < 0.85f) base = 0.85f;
+        if (input::KeyPressed(VK_OEM_4)) {
+            float v = base - 0.15f;
+            if (v < 0.85f) v = 0.85f;
+            cfg::SetScale(v);
+        }
+        if (input::KeyPressed(VK_OEM_6)) {
+            float v = base + 0.15f;
+            if (v > 2.6f) v = 2.6f;
+            cfg::SetScale(v);
+        }
     }
 
     // 绑定捕获
@@ -905,19 +1008,15 @@ void SetVisible(bool v) {
     if (g_visible == v) return;
     g_visible = v;
     input::SetCapture(v && cfg::BlockInput());
-    if (v) {
-        // 打开时把鼠标从游戏手里放出来
-        ClipCursor(nullptr);
-        int guard = 0;
-        while (ShowCursor(TRUE) < 0 && guard++ < 64) {
-        }
-    } else {
+    // 这里以前会 while (ShowCursor(...)) 把进程的显示计数往两头推。
+    // 这个 DLL 注入在游戏进程里，显示计数和游戏是共用的 —— 推一次之后
+    // 游戏自己那一次 ShowCursor 根本拉不回来，光标就长期处于错误状态。
+    // 现在完全不碰显示计数：光标显不显示交给游戏，我们只在看不见时自绘一个。
+    if (!v) {
         g_bind_target = -1;
         g_drag_panel = -1;
         g_drag_slider = -1;
-        int guard = 0;
-        while (ShowCursor(FALSE) >= 0 && guard++ < 64) {
-        }
+        g_drag_scrollbar = -1;
     }
     LogLine("[gui] visible=%d", v ? 1 : 0);
 }
@@ -935,6 +1034,12 @@ void OnFrame() {
     input::NewFrame();
     cfg::Tick();
 
+    // 缩放每帧统一算一次：面板收起时 DrawHud 也要用，不能只在面板分支里算
+    {
+        float sc = cfg::Scale();
+        g_s = (sc > 0.0f) ? sc : AutoScale();
+    }
+
     // 点击计数（CPS）
     if (input::Pressed(0)) {
         g_click_times.push_back(now);
@@ -949,7 +1054,6 @@ void OnFrame() {
         // 游戏每帧都会自己重新裁剪光标，我们跟着解一次只是互相打架，
         // 而且会让"是否已解锁"的检测永远为假。解锁交给 overlay.cpp
         // 里合成的那个按键（cfg::UnlockKey）。
-        g_s = cfg::Scale();
         LayoutPanels();
 
         for (size_t i = 0; i < g_panels.size(); ++i) {
