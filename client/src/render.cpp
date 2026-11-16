@@ -7,6 +7,7 @@
 #include "render.h"
 
 #include <d2d1helper.h>
+#include <d3d11.h>
 #include <wrl/client.h>
 
 #include <map>
