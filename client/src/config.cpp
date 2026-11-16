@@ -36,6 +36,8 @@ PanelConf g_panels[GROUP_COUNT];
 float g_scale = 2.0f;
 bool g_chinese = true;
 bool g_block_input = true;
+bool g_auto_unlock = true;
+int g_unlock_key = 0xA4;  // VK_LMENU
 
 bool g_dirty = false;
 ULONGLONG g_last_change = 0;
@@ -142,6 +144,15 @@ void Load() {
             g_block_input = (_wtoi(value.c_str()) != 0);
             continue;
         }
+        if (key == L"unlock") {
+            g_auto_unlock = (_wtoi(value.c_str()) != 0);
+            continue;
+        }
+        if (key == L"unlockkey") {
+            int vk = _wtoi(value.c_str());
+            if (vk > 0 && vk < 256) g_unlock_key = vk;
+            continue;
+        }
 
         if (key.size() > 2 && key[0] == L'm' && key[1] == L'.') {
             int idx = FindFeature(key.substr(2));
@@ -204,6 +215,8 @@ void Save() {
     fwprintf(f, L"scale=%.3f\n", g_scale);
     fwprintf(f, L"chinese=%d\n", g_chinese ? 1 : 0);
     fwprintf(f, L"blockinput=%d\n", g_block_input ? 1 : 0);
+    fwprintf(f, L"unlock=%d\n", g_auto_unlock ? 1 : 0);
+    fwprintf(f, L"unlockkey=%d\n", g_unlock_key);
 
     for (int i = 0; i < kFeatureCount; ++i) {
         if (g_on[i]) fwprintf(f, L"m.%ls=1\n", kFeatures[i].en);
@@ -327,6 +340,20 @@ bool BlockInput() { return g_block_input; }
 void SetBlockInput(bool v) {
     g_block_input = v;
     MarkDirty();
+}
+
+bool AutoUnlock() { return g_auto_unlock; }
+void SetAutoUnlock(bool v) {
+    g_auto_unlock = v;
+    MarkDirty();
+}
+
+int UnlockKey() { return g_unlock_key; }
+void SetUnlockKey(int vk) {
+    if (vk > 0 && vk < 256) {
+        g_unlock_key = vk;
+        MarkDirty();
+    }
 }
 
 }  // namespace cfg

@@ -47,5 +47,12 @@ void SetHotkey(int vk);
 int Hotkey();
 bool HotkeyPressed();
 
+// 往当前前台窗口合成一次按键（按下+松开）。
+// 用来替用户按游戏的"释放鼠标"键，免得每次开面板都要手动按一下。
+void SendKeyTap(int vk);
+
+// 鼠标是否还被裁剪在某个矩形里（游戏抓着光标时为真）
+bool IsCursorClipped();
+
 }  // namespace input
 }  // namespace xiaoyu

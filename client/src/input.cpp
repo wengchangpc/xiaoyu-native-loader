@@ -148,5 +148,31 @@ void SetHotkey(int vk) { g_hotkey = vk; }
 int Hotkey() { return g_hotkey; }
 bool HotkeyPressed() { return g_hotkey_pressed; }
 
+void SendKeyTap(int vk) {
+    if (vk == 0) return;
+    INPUT in[2] = {};
+    for (int i = 0; i < 2; ++i) {
+        in[i].type = INPUT_KEYBOARD;
+        in[i].ki.wVk = (WORD)vk;
+        in[i].ki.wScan = (WORD)MapVirtualKeyW((UINT)vk, MAPVK_VK_TO_VSC);
+        in[i].ki.dwFlags = (i == 1) ? KEYEVENTF_KEYUP : 0;
+    }
+    UINT sent = SendInput(2, in, sizeof(INPUT));
+    if (sent != 2) {
+        LogLine("[input] SendInput(vk=0x%02X) 只送出了 %u/2, err=%lu", vk,
+                (unsigned)sent, (unsigned long)GetLastError());
+    }
+}
+
+bool IsCursorClipped() {
+    RECT clip;
+    if (!GetClipCursor(&clip)) return false;
+    int sw = GetSystemMetrics(SM_CXSCREEN);
+    int sh = GetSystemMetrics(SM_CYSCREEN);
+    int cw = (int)(clip.right - clip.left);
+    int ch = (int)(clip.bottom - clip.top);
+    return cw < sw - 2 || ch < sh - 2;
+}
+
 }  // namespace input
 }  // namespace xiaoyu

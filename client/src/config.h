@@ -41,5 +41,14 @@ void SetHudEnabled(int feature_index, bool on);
 bool BlockInput();
 void SetBlockInput(bool v);
 
+// 打开面板时是否替用户按一下游戏的"释放鼠标"键（默认开）。
+// 如果哪天游戏改绑定、或合成的 Alt 反而把鼠标锁回去，把它设成 0 就能退回手动。
+bool AutoUnlock();
+void SetAutoUnlock(bool v);
+
+// 合成哪个键来解锁鼠标，默认 VK_LMENU（左 Alt）
+int UnlockKey();
+void SetUnlockKey(int vk);
+
 }  // namespace cfg
 }  // namespace xiaoyu

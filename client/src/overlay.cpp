@@ -26,6 +26,7 @@
 #include <objbase.h>   // CoInitializeEx
 #include <windowsx.h>
 
+#include "config.h"
 #include "gui.h"
 #include "input.h"
 #include "log.h"
@@ -43,6 +44,7 @@ int g_cached_x = 0, g_cached_y = 0, g_cached_w = 0, g_cached_h = 0;
 bool g_visible = false;
 bool g_interactive = false;
 bool g_running = false;
+ULONGLONG g_unlock_check_at = 0;  // 合成解锁键之后多久去确认一次效果
 
 struct FindCtx {
     DWORD pid;
@@ -53,10 +55,21 @@ struct FindCtx {
 BOOL CALLBACK EnumProc(HWND hwnd, LPARAM lp) {
     FindCtx* ctx = reinterpret_cast<FindCtx*>(lp);
 
+    if (hwnd == g_overlay) return TRUE;   // 别把自家窗口认成游戏
+
     DWORD pid = 0;
     GetWindowThreadProcessId(hwnd, &pid);
     if (pid != ctx->pid) return TRUE;
     if (!IsWindowVisible(hwnd)) return TRUE;
+
+    // 只认游戏窗口类。之前只按面积挑最大的，结果覆盖窗口本身
+    // （1215x702，比游戏客户区还大一圈）会因为面积胜出被选中，
+    // 日志里出现过 "[overlay] 游戏窗口 hwnd=...09308EA" 这种自指。
+    {
+        wchar_t cls[64] = {0};
+        GetClassNameW(hwnd, cls, 64);
+        if (wcscmp(cls, kClassName) == 0) return TRUE;
+    }
 
     // 只要顶层、无 owner 的窗口
     if (GetWindow(hwnd, GW_OWNER) != nullptr) return TRUE;
@@ -84,6 +97,39 @@ HWND FindGameWindow() {
     return ctx.best;
 }
 
+// ── 滚轮 ────────────────────────────────────────────────────────
+// WM_MOUSEWHEEL 只发给"有焦点"的窗口，而我们是 WS_EX_NOACTIVATE，
+// 焦点永远在游戏那边，所以正常途径收不到滚轮（实测面板滚不动就是这个原因）。
+//
+// 改用 Raw Input 的 RIDEV_INPUTSINK：窗口不在前台也能收到 WM_INPUT。
+// 只在面板打开期间注册 —— INPUTSINK 会把每一条鼠标消息都投过来，
+// 高刷新率鼠标一秒上千条，没必要一直挂着。
+void RegisterWheelSink(bool on) {
+    if (g_overlay == nullptr) return;
+    RAWINPUTDEVICE rid = {};
+    rid.usUsagePage = 0x01;   // Generic Desktop Controls
+    rid.usUsage = 0x02;       // Mouse
+    rid.dwFlags = on ? RIDEV_INPUTSINK : RIDEV_REMOVE;
+    rid.hwndTarget = on ? g_overlay : nullptr;
+    if (!RegisterRawInputDevices(&rid, 1, sizeof(rid))) {
+        LogLine("[overlay] RegisterRawInputDevices(%d) failed err=%lu", on ? 1 : 0,
+                (unsigned long)GetLastError());
+    } else if (on) {
+        LogLine("[overlay] 已挂上 Raw Input 滚轮接收");
+    }
+}
+
+// 让游戏交还鼠标。
+// 游戏自己把光标锁在窗口里，外部 ClipCursor(nullptr) 会被它下一帧重新设回去
+// （实测每帧解一次也没用）。用户手动按 Alt 能解锁，说明这是游戏自己的绑定，
+// 那就替用户按一下 —— 打开面板时按一次，关掉时再按一次恢复，正好对称。
+void ToggleGameCursorRelease(const char* why) {
+    int vk = cfg::UnlockKey();
+    LogLine("[overlay] 合成解锁键 vk=0x%02X（%s），当前是否被裁剪=%d", vk, why,
+            input::IsCursorClipped() ? 1 : 0);
+    input::SendKeyTap(vk);
+}
+
 // 面板可见性变化时切换命中测试模式
 void UpdateInputMode() {
     if (g_overlay == nullptr) return;
@@ -109,8 +155,18 @@ void UpdateInputMode() {
     if (want) {
         // 面板打开时解除游戏的鼠标裁剪，免得光标被困在窗口里
         ClipCursor(nullptr);
+        // 替用户按一下游戏自己的"释放鼠标"键
+        if (cfg::AutoUnlock()) {
+            ToggleGameCursorRelease("打开面板");
+            g_unlock_check_at = GetTickCount64() + 400;
+        }
+        RegisterWheelSink(true);
         // 顺便让渲染层在下一帧做一次像素自检，把面板的实际绘制范围写进日志
         render::RequestSelfCheck();
+    } else {
+        RegisterWheelSink(false);
+        // 关掉面板时把鼠标交回游戏，不然游戏里会一直没有视角控制
+        if (cfg::AutoUnlock()) ToggleGameCursorRelease("关闭面板");
     }
     LogLine("[overlay] 输入模式 -> %s", want ? "接管鼠标" : "点击穿透");
 }
@@ -174,6 +230,22 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_MOUSEWHEEL:
             input::AddWheel((float)GET_WHEEL_DELTA_WPARAM(wp) / (float)WHEEL_DELTA);
             return 0;
+
+        case WM_INPUT: {
+            // Raw Input 送来的滚轮。面板打开时我们挂了 RIDEV_INPUTSINK，
+            // 所以窗口没焦点也能收到。
+            RAWINPUT raw = {};
+            UINT size = sizeof(raw);
+            if (GetRawInputData((HRAWINPUT)lp, RID_INPUT, &raw, &size,
+                                sizeof(RAWINPUTHEADER)) != (UINT)-1) {
+                if (raw.header.dwType == RIM_TYPEMOUSE &&
+                    (raw.data.mouse.usButtonFlags & RI_MOUSE_WHEEL)) {
+                    short delta = (short)raw.data.mouse.usButtonData;
+                    input::AddWheel((float)delta / (float)WHEEL_DELTA);
+                }
+            }
+            break;  // 不吞，继续交给 DefWindowProc
+        }
 
         case WM_ERASEBKGND:
             return 1;  // 内容全由 DComp 合成，别让 GDI 刷一层底色
@@ -301,6 +373,13 @@ int OverlayMain() {
             // 的边沿状态清掉，点击就丢了。
             UpdateInputMode();
             RenderOnce();
+
+            // 合成解锁键之后确认一次效果，方便判断这个绑定到底管不管用
+            if (g_unlock_check_at != 0 && GetTickCount64() >= g_unlock_check_at) {
+                g_unlock_check_at = 0;
+                LogLine("[overlay] 解锁检查：cursor_clipped=%d（0 表示游戏已交还鼠标）",
+                        input::IsCursorClipped() ? 1 : 0);
+            }
 
             ULONGLONG now = GetTickCount64();
             if (now - last_report > 30000) {

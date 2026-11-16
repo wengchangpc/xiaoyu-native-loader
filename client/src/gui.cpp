@@ -259,22 +259,32 @@ void LayoutPanels() {
 // ── 绘制辅助 ────────────────────────────────────────────────────
 void DrawPanelChrome(const Panel& p, bool hover_head) {
     const float s = g_s;
+    const float r = kRadius * s;
+    const float head_h = kHeadH * s;
     const D2D1_COLOR_F col_head = hover_head ? theme::kHeadHover : theme::kHeadBg;
 
-    // 阴影
-    render::Rect(p.x - kShadow * s, p.y - kShadow * s, p.w + kShadow * 2.0f * s,
-                 p.h + kShadow * 2.0f * s, theme::kShadow);
+    // 柔和阴影：由外向内叠三层半透明圆角矩形。
+    // 原来画的是一个硬边纯黑矩形（kShadow 0.30），在游戏画面上看起来
+    // 就是个套在面板外面的黑框，非常脏。三层叠加才有渐变感。
+    for (int i = 3; i >= 1; --i) {
+        float d = kShadow * s * (float)i / 3.0f;
+        float a = 0.05f * (float)(4 - i);   // 外 0.05 内 0.15
+        render::RoundRect(p.x - d, p.y - d + 1.5f * s, p.w + d * 2.0f, p.h + d * 2.0f,
+                          r + d, render::RgbaF(0.0f, 0.0f, 0.0f, a));
+    }
 
-    // 面板
-    render::RoundRect(p.x, p.y, p.w, p.h, kRadius * s, theme::kBg);
+    // 面板整体一次画完：四个角自然都是圆的，栏体不再需要单独铺底色
+    render::RoundRect(p.x, p.y, p.w, p.h, r, theme::kBody);
 
-    // 栏头
-    render::PushClip(p.x, p.y, p.w, kHeadH * s + 1.0f);
-    render::Rect(p.x, p.y, p.w, kHeadH * s, col_head);
-    render::PopClip();
+    // 栏头：先按圆角画，再用矩形把下半部分的圆角填平。
+    // 这样上面两角跟着面板圆角走，下面和栏体无缝接上 ——
+    // 之前直接用 PushClip + 直角矩形，顶部两角会把面板的圆角盖成直角。
+    render::RoundRect(p.x, p.y, p.w, head_h, r, col_head);
+    render::Rect(p.x, p.y + head_h * 0.5f, p.w, head_h * 0.5f, col_head);
 
-    // 顶部强调线
-    render::Rect(p.x, p.y, p.w, (s > 1.5f ? 2.0f : 1.0f), theme::kAccentD);
+    // 顶部强调线：两端各让出一点，避免直角戳出圆角轮廓
+    render::Rect(p.x + r * 0.75f, p.y, p.w - r * 1.5f,
+                 (s > 1.5f ? 1.6f : 1.0f) * s, theme::kAccentD);
 
     // 标题
     float title_size = 11.0f * s;
@@ -288,31 +298,54 @@ void DrawPanelChrome(const Panel& p, bool hover_head) {
                  title_size, theme::kArrow, ALIGN_LEFT, false);
 }
 
-// 返回 true 表示命中（用于 hover 高亮）
-void DrawScrollbar(const Panel& p) {
-    const float s = g_s;
-    if (p.collapsed) return;
-    float body_h = p.h - kHeadH * s;
-    if (p.content_h <= p.max_body + 0.5f) return;
+// 滚动条几何。原来滚动条是"只画不响应"的 —— g_drag_scrollbar 从来没被赋值，
+// 所以拖着没反应、滚轮又因为窗口没焦点收不到消息，等于完全滚不动。
+struct BarGeom {
+    bool valid = false;
+    float bx = 0.0f, by = 0.0f, bw = 0.0f, bh = 0.0f;
+    float thumb_h = 0.0f;
+    float max_scroll = 0.0f;
+};
 
-    float bar_w = kScrollbarW * s;
-    if (bar_w < 2.0f) bar_w = 2.0f;
-    float bx = p.x + p.w - bar_w - 1.0f * s;
-    float by = p.y + kHeadH * s + 4.0f * s;
-    float bh = body_h - 8.0f * s;
-    render::Rect(bx, by, bar_w, bh, theme::kScrollTrack);
+BarGeom ScrollbarGeom(const Panel& p) {
+    BarGeom g;
+    if (p.collapsed) return g;
+    if (p.content_h <= p.max_body + 0.5f) return g;
+
+    const float s = g_s;
+    float view_h = (p.h - kHeadH * s) - 6.0f * s;
+    if (view_h < 12.0f * s) return g;
+
+    g.bw = kScrollbarW * s;
+    if (g.bw < 4.0f) g.bw = 4.0f;
+    g.bx = p.x + p.w - g.bw - 2.0f * s;
+    g.by = p.y + kHeadH * s + 2.0f * s;
+    g.bh = view_h - 4.0f * s;
+    if (g.bh < 8.0f) return g;
 
     float ratio = p.max_body / p.content_h;
     if (ratio > 1.0f) ratio = 1.0f;
-    float thumb_h = bh * ratio;
-    if (thumb_h < 12.0f * s) thumb_h = 12.0f * s;
-    float max_scroll = p.content_h - p.max_body;
-    if (max_scroll < 1.0f) max_scroll = 1.0f;
-    float t = p.scroll / max_scroll;
+    g.thumb_h = g.bh * ratio;
+    float min_thumb = 14.0f * s;
+    if (g.thumb_h < min_thumb) g.thumb_h = min_thumb;
+    if (g.thumb_h > g.bh) g.thumb_h = g.bh;
+
+    g.max_scroll = p.content_h - p.max_body;
+    if (g.max_scroll < 1.0f) g.max_scroll = 1.0f;
+    g.valid = true;
+    return g;
+}
+
+void DrawScrollbar(const Panel& p, bool hot) {
+    BarGeom g = ScrollbarGeom(p);
+    if (!g.valid) return;
+    float t = p.scroll / g.max_scroll;
     if (t < 0.0f) t = 0.0f;
     if (t > 1.0f) t = 1.0f;
-    float ty = by + (bh - thumb_h) * t;
-    render::RoundRect(bx, ty, bar_w, thumb_h, bar_w * 0.5f, theme::kScrollThumb);
+    float ty = g.by + (g.bh - g.thumb_h) * t;
+    render::RoundRect(g.bx, g.by, g.bw, g.bh, g.bw * 0.5f, theme::kScrollTrack);
+    render::RoundRect(g.bx, ty, g.bw, g.thumb_h, g.bw * 0.5f,
+                      hot ? theme::kScrollThumbHot : theme::kScrollThumb);
 }
 
 // 画一个参数行；interactive 为 true 时只做命中测试
@@ -488,10 +521,14 @@ void DrawFeatureRow(int fi, const Panel& p, float row_x, float& row_y, bool inte
                         my >= p.y + kHeadH * s && my <= p.y + p.h;
 
     if (!interactive) {
+        // 上下各让出 1 个单位：原来行是满贴的，整栏看起来就是一块死黑，
+        // 加缝隙之后每一行才有独立感（原版 ROW_INSET=1 也是这个意思）。
+        const float iy = kInset * s;
+        const float rh = h - iy * 2.0f;
         if (on) {
-            render::Rect(row_x, y, w, h, theme::kRow);
+            render::RoundRect(row_x, y + iy, w, rh, 2.0f * s, theme::kRow);
         } else if (inside) {
-            render::Rect(row_x, y, w, h, theme::kRowHover);
+            render::RoundRect(row_x, y + iy, w, rh, 2.0f * s, theme::kRowHover);
         }
 
         const FeatureInfo& f = kFeatures[fi];
@@ -578,7 +615,7 @@ void DrawPanel(Panel& p, bool interactive) {
             }
         }
 
-        // 滚轮
+        // 滚轮（Raw Input 送进来，见 overlay.cpp 的 RIDEV_INPUTSINK）
         if (body_inside && !p.collapsed && input::Wheel() != 0.0f) {
             float max_scroll = p.content_h - p.max_body;
             if (max_scroll > 0.0f) {
@@ -588,6 +625,52 @@ void DrawPanel(Panel& p, bool interactive) {
                 g_scroll[p.group] = p.scroll;
             }
         }
+
+        // 滚动条拖动 / 点轨道跳转
+        {
+            BarGeom bar = ScrollbarGeom(p);
+            if (bar.valid && g_drag_scrollbar < 0 && g_drag_panel < 0) {
+                // 命中区比视觉宽度左右各宽 3px，细条也好点
+                float pad_x = 3.0f * s;
+                bool in_track = mx >= bar.bx - pad_x && mx <= bar.bx + bar.bw + pad_x &&
+                                my >= bar.by && my <= bar.by + bar.bh;
+                if (input::Pressed(0) && in_track) {
+                    float t = p.scroll / bar.max_scroll;
+                    float thumb_y = bar.by + (bar.bh - bar.thumb_h) * t;
+                    bool on_thumb = my >= thumb_y && my <= thumb_y + bar.thumb_h;
+                    g_drag_scrollbar = p.group;
+                    g_drag_mouse_start = my;
+                    if (!on_thumb) {
+                        // 点在轨道空白处：滑块中心跳到鼠标位置
+                        float span = bar.bh - bar.thumb_h;
+                        float nt = span > 1.0f ? (my - bar.by - bar.thumb_h * 0.5f) / span
+                                               : 0.0f;
+                        if (nt < 0.0f) nt = 0.0f;
+                        if (nt > 1.0f) nt = 1.0f;
+                        p.scroll = nt * bar.max_scroll;
+                        g_scroll[p.group] = p.scroll;
+                    }
+                    g_drag_scroll_start = p.scroll;
+                }
+            }
+            if (g_drag_scrollbar == p.group) {
+                if (input::Down(0)) {
+                    BarGeom bg = ScrollbarGeom(p);
+                    if (bg.valid) {
+                        float span = bg.bh - bg.thumb_h;
+                        if (span < 1.0f) span = 1.0f;
+                        float ns = g_drag_scroll_start +
+                                   (my - g_drag_mouse_start) / span * bg.max_scroll;
+                        if (ns < 0.0f) ns = 0.0f;
+                        if (ns > bg.max_scroll) ns = bg.max_scroll;
+                        p.scroll = ns;
+                        g_scroll[p.group] = ns;
+                    }
+                }
+                if (input::Released(0)) g_drag_scrollbar = -1;
+            }
+        }
+
         if (p.collapsed) {
             p.scroll = 0.0f;
             g_scroll[p.group] = 0.0f;
@@ -596,15 +679,20 @@ void DrawPanel(Panel& p, bool interactive) {
 
     if (p.collapsed) return;
 
-    // 栏体
+    // 栏体。面板底色已经由 DrawPanelChrome 整体铺好，这里只画内容和滚动条。
+    // view_h 要扣掉底部 6 个单位的留白，否则滚动到底时行会盖住面板的圆角。
     float body_y = p.y + headH;
     float body_h = p.h - headH;
-    if (!interactive) {
-        render::RoundRect(p.x, body_y, p.w, body_h, 0.0f, theme::kBody);
-        DrawScrollbar(p);
-    }
+    float view_h = body_h - 6.0f * s;
+    if (view_h < 0.0f) view_h = 0.0f;
 
-    if (!interactive) render::PushClip(p.x, body_y, p.w, body_h);
+    if (!interactive) {
+        BarGeom bar = ScrollbarGeom(p);
+        bool hot = bar.valid && mx >= bar.bx - 3.0f * s && mx <= bar.bx + bar.bw + 3.0f * s &&
+                   my >= bar.by && my <= bar.by + bar.bh;
+        DrawScrollbar(p, hot || g_drag_scrollbar == p.group);
+        render::PushClip(p.x, body_y, p.w, view_h);
+    }
 
     float row_y = body_y + 3.0f * s;
     for (int i = 0; i < kFeatureCount; ++i) {
@@ -826,8 +914,10 @@ void OnFrame() {
     ReleaseDrags();
 
     if (g_visible) {
-        // 每帧把鼠标钳制解除一次：游戏会不停重新 ClipCursor
-        ClipCursor(nullptr);
+        // 注意：这里不再每帧调 ClipCursor(nullptr)。
+        // 游戏每帧都会自己重新裁剪光标，我们跟着解一次只是互相打架，
+        // 而且会让"是否已解锁"的检测永远为假。解锁交给 overlay.cpp
+        // 里合成的那个按键（cfg::UnlockKey）。
         g_s = cfg::Scale();
         LayoutPanels();
 

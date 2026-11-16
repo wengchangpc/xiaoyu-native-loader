@@ -34,9 +34,10 @@ inline const D2D1_COLOR_F kArrow = render::Rgba(217, 217, 224, 140);
 inline const D2D1_COLOR_F kShadow = render::Rgba(0, 0, 0, 77);
 // 滑轨 白 0.14
 inline const D2D1_COLOR_F kTrack = render::Rgba(255, 255, 255, 36);
-// 滚动条 白 0.10 / 0.40
+// 滚动条 白 0.10 / 0.40 / 0.58（最后一个是悬停/拖动时）
 inline const D2D1_COLOR_F kScrollTrack = render::Rgba(255, 255, 255, 26);
 inline const D2D1_COLOR_F kScrollThumb = render::Rgba(255, 255, 255, 102);
+inline const D2D1_COLOR_F kScrollThumbHot = render::Rgba(255, 255, 255, 150);
 
 }  // namespace theme
 }  // namespace xiaoyu
