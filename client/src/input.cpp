@@ -95,8 +95,12 @@ bool RelativeMode() { return g_relative; }
 
 void AddMouseDelta(int dx, int dy) {
     if (!g_relative) return;
-    g_mx += (float)dx;
-    g_my += (float)dy;
+    // Raw Input 的位移是"鼠标计数"，和像素不是 1:1：系统鼠标加速、DPI、
+    // 游戏里的灵敏度都不影响它，但玩家的手感是按光标走的。乘一个系数
+    // 让面板上的光标跟手一点，1.5 是试出来的折中值。
+    const float kSens = 1.5f;
+    g_mx += (float)dx * kSens;
+    g_my += (float)dy * kSens;
     // 钳在客户区内：跑出去之后面板就点不到了
     if (g_hwnd != nullptr) {
         RECT rc = {};
