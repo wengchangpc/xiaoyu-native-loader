@@ -121,6 +121,7 @@ void Load() {
 
     wchar_t line[1024];
     int n = 0;
+    bool saw_focus = false;   // focus= 只有新版本才会写
     while (fgetws(line, 1024, f) != nullptr) {
         std::wstring s = Trim(line);
         if (s.empty() || s[0] == L'#') continue;
@@ -153,6 +154,7 @@ void Load() {
         }
         if (key == L"focus") {
             g_take_focus = (_wtoi(value.c_str()) != 0);
+            saw_focus = true;
             continue;
         }
         if (key == L"unlock") {
@@ -209,6 +211,18 @@ void Load() {
         }
     }
     fclose(f);
+
+    // 旧版配置里 scale=2.000 是当年写死的默认值，unlock=1 是后来被证伪的
+    // "合成 Alt" 方案。这两项如果原样读回来，升级后界面还是铺满屏幕、
+    // 关闭面板还是会把游戏卡在光标模式里。老配置只认一次，之后就正常保存了。
+    if (!saw_focus) {
+        if (g_scale > 0.0f) {
+            LogLine("[cfg] 旧版配置 scale=%.2f 已重置为自动", g_scale);
+        }
+        g_scale = 0.0f;
+        g_auto_unlock = false;
+    }
+
     LogLine("[cfg] loaded %d lines, scale=%.2f chinese=%d", n, g_scale,
             g_chinese ? 1 : 0);
 }
