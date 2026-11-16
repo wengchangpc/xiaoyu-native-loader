@@ -479,10 +479,11 @@ void TickAttackSprintReset() {
 bool Implemented(const wchar_t* english_name) {
     if (english_name == nullptr) return false;
     // 纯 GUI / HUD 类：本来就不需要游戏交互
+    // 注意 HUD / TitleRender 不在这里：HUD 是关掉原版界面元素、TitleRender 是
+    // 把称号画在实体头顶，两者都要读游戏状态，现在做不到，别谎报成已实现。
     static const wchar_t* kGuiOnly[] = {
         L"ClickGui", L"ConfigSave", L"FPS",      L"CPS",
-        L"ArrayList", L"Keystrokes", L"Notification", L"HUD",
-        L"TitleRender", L"Debug",
+        L"ArrayList", L"Keystrokes", L"Notification", L"Debug",
     };
     for (size_t i = 0; i < sizeof(kGuiOnly) / sizeof(kGuiOnly[0]); ++i) {
         if (wcscmp(kGuiOnly[i], english_name) == 0) return true;

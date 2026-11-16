@@ -117,6 +117,7 @@ HWND FindGameWindow() {
 // 千万不要在这里切进相对光标模式再自绘一个，那会出现"两个光标一起动"。
 bool g_raw_hooked = false;      // 只在状态真正切换时打日志
 ULONGLONG g_raw_reassert_at = 0;
+ULONGLONG g_clip_refresh_at = 0;
 
 void HookMouseToOverlay(bool on) {
     if (g_overlay == nullptr) return;
@@ -260,6 +261,12 @@ void ToggleGameCursorRelease(const char* why, bool verify) {
 // 所以调用方要定期重设。
 void ClipToGameClient() {
     if (g_game == nullptr || !IsWindow(g_game)) return;
+    // 游戏不是前台时绝对不能锁：光标是桌面级共享资源，锁上之后用户切到
+    // 浏览器/聊天窗口都点不动，会以为系统卡死了。
+    if (GetForegroundWindow() != g_game) {
+        ClipCursor(nullptr);
+        return;
+    }
     RECT cr = {};
     if (!GetClientRect(g_game, &cr)) return;
     POINT tl = {0, 0};
@@ -533,7 +540,11 @@ int OverlayMain() {
                 if (now >= g_raw_reassert_at) {
                     g_raw_reassert_at = now + 1000;
                     HookMouseToOverlay(true);
-                    // 窗口可能被拖动或改过尺寸，锁定区域跟着刷新一次
+                }
+                // 光标锁定刷新得比 Raw Input 更勤：窗口可能被拖动/改过尺寸，
+                // 更关键的是用户一旦 Alt-Tab 出去就要立刻解锁，不能等一秒。
+                if (now >= g_clip_refresh_at) {
+                    g_clip_refresh_at = now + 250;
                     ClipToGameClient();
                 }
             }
