@@ -79,9 +79,17 @@ int FindParam(int feature, const std::wstring& attr) {
 }
 
 std::wstring Trim(const std::wstring& s) {
-    size_t a = s.find_first_not_of(L" \t\r\n");
+    // Save 写出来的文件带 UTF-8 BOM，读回来第一个字符是 U+FEFF。
+    // 它不属于 isspace 那套，会挂在 key 最前面，导致 key[0] == L'm' 之类的判断全部落空。
+    // 这里按码位显式跳过，而不是塞进 find_first_not_of 的字符集里（宽字面量里的
+    // \uFEFF 转义在 MSVC 下行为不够确定）。
+    size_t start = 0;
+    if (!s.empty() && s[0] == 0xFEFF) start = 1;
+
+    size_t a = s.find_first_not_of(L" \t\r\n", start);
     if (a == std::wstring::npos) return L"";
     size_t b = s.find_last_not_of(L" \t\r\n");
+    if (b < a) return L"";
     return s.substr(a, b - a + 1);
 }
 

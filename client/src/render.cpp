@@ -251,6 +251,8 @@ bool BeginFrame(IDXGISwapChain* sc) {
         }
     }
 
+    if (g_ctx == nullptr || g_brush == nullptr) return false;
+
     g_clip_depth = 0;
     g_ctx->BeginDraw();
     g_ctx->SetTransform(D2D1::Matrix3x2F::Identity());
@@ -274,13 +276,14 @@ int Width() { return g_width; }
 int Height() { return g_height; }
 
 void Rect(float x, float y, float w, float h, const D2D1_COLOR_F& c) {
-    if (g_ctx == nullptr || w <= 0.0f || h <= 0.0f) return;
+    // g_brush 为空时直接 return：ComPtr 的 operator-> 不做判空，空指针会直接 AV
+    if (g_ctx == nullptr || g_brush == nullptr || w <= 0.0f || h <= 0.0f) return;
     g_brush->SetColor(c);
     g_ctx->FillRectangle(D2D1::RectF(x, y, x + w, y + h), g_brush.Get());
 }
 
 void RoundRect(float x, float y, float w, float h, float r, const D2D1_COLOR_F& c) {
-    if (g_ctx == nullptr || w <= 0.0f || h <= 0.0f) return;
+    if (g_ctx == nullptr || g_brush == nullptr || w <= 0.0f || h <= 0.0f) return;
     float rr = r;
     if (rr > w * 0.5f) rr = w * 0.5f;
     if (rr > h * 0.5f) rr = h * 0.5f;
@@ -290,14 +293,14 @@ void RoundRect(float x, float y, float w, float h, float r, const D2D1_COLOR_F& 
 }
 
 void Line(float x1, float y1, float x2, float y2, float width, const D2D1_COLOR_F& c) {
-    if (g_ctx == nullptr) return;
+    if (g_ctx == nullptr || g_brush == nullptr) return;
     g_brush->SetColor(c);
     g_ctx->DrawLine(D2D1::Point2F(x1, y1), D2D1::Point2F(x2, y2), g_brush.Get(), width);
 }
 
 void Text(const wchar_t* s, float x, float y, float w, float h, float size,
           const D2D1_COLOR_F& c, int align, bool bold) {
-    if (g_ctx == nullptr || s == nullptr || *s == L'\0') return;
+    if (g_ctx == nullptr || g_brush == nullptr || s == nullptr || *s == L'\0') return;
     IDWriteTextFormat* fmt = GetFormat(size, bold, align);
     if (fmt == nullptr) return;
     g_brush->SetColor(c);
