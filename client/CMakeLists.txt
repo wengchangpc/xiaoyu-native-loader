@@ -48,10 +48,7 @@ set_target_properties(xiaoyu_client PROPERTIES
 target_link_libraries(xiaoyu_client PRIVATE
     d2d1
     dwrite
-    d3d11
-    dxgi
-    dcomp          # DirectComposition：把合成交换链贴到 DWM 上
-    ole32          # CoInitializeEx（DirectComposition 要求）
+    ole32          # CoInitializeEx
     kernel32
     user32
     gdi32

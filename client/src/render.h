@@ -55,6 +55,9 @@ void Resize(int w, int h);
 bool BeginFrame();
 void EndFrame();
 
+// 下一帧做一次像素自检并写日志（数非透明像素 + 包围盒），用于远程排障
+void RequestSelfCheck();
+
 int Width();
 int Height();
 

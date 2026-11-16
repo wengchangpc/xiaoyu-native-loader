@@ -12,12 +12,13 @@
 //     3. 现有 D2D 绘制代码和 gui.cpp 一行都不用动。
 //
 // 点击穿透（这条是必须的，否则 HUD 一显示游戏就点不动了）：
-//   面板收起时同时用三重手段让鼠标穿过去：
-//     - EnableWindow(FALSE)：被禁用的窗口不参与命中测试；
-//     - WS_EX_TRANSPARENT：窗口在命中测试里被跳过；
-//     - WM_NCHITTEST 返回 HTTRANSPARENT。
-//   任意一条生效就够了，三条一起上是为了不依赖某一条的具体实现细节。
-//   面板打开时才恢复成可交互 —— 相当于一个模态菜单。
+//   面板收起时给窗口加上 WS_EX_TRANSPARENT —— 分层窗口 + WS_EX_TRANSPARENT
+//   是覆盖层里用了十几年的标准穿透组合，行为确定。面板打开时去掉它，
+//   相当于一个模态菜单。
+//
+//   踩过的坑：之前还额外调了 EnableWindow(FALSE) 想"双保险"，结果被禁用的
+//   窗口虽然不处理鼠标，却也不会把点击转给下面的窗口，而是直接丢弃 ——
+//   表现就是游戏里左键挖不了方块。所以这里绝对不能再禁用窗口。
 //
 // 键盘不靠窗口消息：统一用 GetAsyncKeyState 轮询（见 input.cpp），
 // 这样游戏抢着焦点也能读到按键。
@@ -101,9 +102,6 @@ void UpdateInputMode() {
     }
     SetWindowLongW(g_overlay, GWL_EXSTYLE, ex);
 
-    // 禁用的窗口不参与命中测试，这是最可靠的一条
-    EnableWindow(g_overlay, want ? TRUE : FALSE);
-
     SetWindowPos(g_overlay, nullptr, 0, 0, 0, 0,
                  SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE |
                      SWP_FRAMECHANGED);
@@ -111,6 +109,8 @@ void UpdateInputMode() {
     if (want) {
         // 面板打开时解除游戏的鼠标裁剪，免得光标被困在窗口里
         ClipCursor(nullptr);
+        // 顺便让渲染层在下一帧做一次像素自检，把面板的实际绘制范围写进日志
+        render::RequestSelfCheck();
     }
     LogLine("[overlay] 输入模式 -> %s", want ? "接管鼠标" : "点击穿透");
 }
@@ -209,10 +209,11 @@ bool CreateOverlayWindow() {
         }
     }
 
-    // WS_EX_NOREDIRECTIONBITMAP 是合成交换链的硬性前提；
+    // 分层窗口：内容由 render.cpp 的 UpdateLayeredWindow 提交，
+    // 所以这里要 WS_EX_LAYERED，且绝不能用 WS_EX_NOREDIRECTIONBITMAP（两者互斥）。
     // TOOLWINDOW 让它不进任务栏和 Alt+Tab，NOACTIVATE 保证不抢焦点。
     // 初始带 TRANSPARENT（点击穿透），面板打开后由 UpdateInputMode 去掉。
-    DWORD ex = WS_EX_NOREDIRECTIONBITMAP | WS_EX_TOPMOST | WS_EX_TOOLWINDOW |
+    DWORD ex = WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW |
                WS_EX_NOACTIVATE | WS_EX_TRANSPARENT;
 
     g_overlay = CreateWindowExW(ex, kClassName, L"xiaoyu overlay", WS_POPUP,
@@ -221,7 +222,6 @@ bool CreateOverlayWindow() {
         LogLine("[overlay] CreateWindowEx failed err=%lu", (unsigned long)GetLastError());
         return false;
     }
-    EnableWindow(g_overlay, FALSE);  // 初始不可交互
     LogLine("[overlay] 覆盖窗口已创建 hwnd=%p", (void*)g_overlay);
     return true;
 }
