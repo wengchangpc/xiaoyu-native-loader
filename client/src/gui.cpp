@@ -19,6 +19,7 @@
 #include "gui/theme.h"
 #include "input.h"
 #include "log.h"
+#include "modules.h"
 #include "render.h"
 
 namespace xiaoyu {
@@ -807,6 +808,95 @@ int Cps() {
     return n;
 }
 
+// ── 模块开关通知 ────────────────────────────────────────────────
+// 面板收起时看不到谁被打开了，切模块的时候在屏幕右侧弹一条，
+// 2 秒后自己淡出。开关变化靠每帧对比上一次的快照，不需要模块自己去调。
+struct NotifyItem {
+    std::wstring text;
+    bool on = false;
+    ULONGLONG at = 0;
+};
+
+std::vector<NotifyItem> g_notifies;
+std::vector<char> g_prev_on;
+bool g_notify_was_on = false;
+
+void TickNotifications() {
+    const int idx = FindFeatureByName(L"Notification");
+    const bool enabled = (idx >= 0) && cfg::ModuleOn(idx);
+    if (!enabled) {
+        g_notifies.clear();
+        g_notify_was_on = false;
+        return;
+    }
+
+    const ULONGLONG now = GetTickCount64();
+
+    // 刚打开通知功能时先同步一次快照，否则会把当时所有开着的模块全播一遍
+    if (!g_notify_was_on) {
+        g_notify_was_on = true;
+        g_prev_on.assign(kFeatureCount, 0);
+        for (int i = 0; i < kFeatureCount; ++i) g_prev_on[i] = cfg::ModuleOn(i) ? 1 : 0;
+        g_notifies.clear();
+        return;
+    }
+
+    if ((int)g_prev_on.size() != kFeatureCount) {
+        g_prev_on.assign(kFeatureCount, 0);
+        for (int i = 0; i < kFeatureCount; ++i) g_prev_on[i] = cfg::ModuleOn(i) ? 1 : 0;
+        return;
+    }
+
+    for (int i = 0; i < kFeatureCount; ++i) {
+        const char cur = cfg::ModuleOn(i) ? 1 : 0;
+        if (cur == g_prev_on[i]) continue;
+        g_prev_on[i] = cur;
+        NotifyItem n;
+        n.text = FeatName(i);
+        n.on = (cur != 0);
+        n.at = now;
+        g_notifies.push_back(n);
+        if (g_notifies.size() > 6) g_notifies.erase(g_notifies.begin());
+    }
+
+    while (!g_notifies.empty() && now - g_notifies.front().at > 2400) {
+        g_notifies.erase(g_notifies.begin());
+    }
+}
+
+void DrawNotifications() {
+    if (g_notifies.empty()) return;
+    const float s = g_s;
+    const ULONGLONG now = GetTickCount64();
+    float y = (float)render::Height() * 0.42f;
+
+    for (size_t i = 0; i < g_notifies.size(); ++i) {
+        const NotifyItem& n = g_notifies[i];
+        const ULONGLONG age = now - n.at;
+        if (age > 2400) continue;
+
+        float a = 1.0f;
+        if (age < 120) a = (float)age / 120.0f;
+        else if (age > 2000) a = 1.0f - (float)(age - 2000) / 400.0f;
+        if (a < 0.0f) a = 0.0f;
+
+        const float slide = (1.0f - a) * 24.0f * s;
+        const float tw = render::Measure(n.text.c_str(), 10.0f * s, false);
+        const float w = tw + 28.0f * s;
+        const float hgt = 18.0f * s;
+        const float x = (float)render::Width() - w - 10.0f * s + slide;
+
+        render::RoundRect(x, y, w, hgt, 3.0f * s,
+                          render::RgbaF(0.06f, 0.06f, 0.06f, 0.90f * a));
+        render::Rect(x, y, 2.0f * s, hgt,
+                     render::WithAlpha(n.on ? theme::kAccent : theme::kOff, a));
+        render::Text(n.text.c_str(), x + 8.0f * s, y, w - 10.0f * s, hgt, 10.0f * s,
+                     render::WithAlpha(n.on ? theme::kAccent : theme::kSub, a),
+                     ALIGN_LEFT, false);
+        y += hgt + 3.0f * s;
+    }
+}
+
 // 系统光标现在是否可见。游戏进入鼠标捕获模式时会 ShowCursor(FALSE)，
 // 那是它自己线程里的计数，我们从外面 ShowCursor(TRUE) 是改不动的，
 // 所以只能自己判断、自己补一个指针。
@@ -909,6 +999,8 @@ void DrawHud() {
                          down ? theme::kHeadBg : theme::kOff, ALIGN_CENTER, false);
         }
     }
+
+    DrawNotifications();
 }
 
 // 热键防抖：抢焦点/交还焦点的瞬间，GetAsyncKeyState 会短暂读到 0 再读到按下，
@@ -1069,6 +1161,11 @@ void OnFrame() {
     }
 
     DrawHud();
+
+    // 模块运行时：自动连点 / 疾跑 / 防挂机 / 钓鱼。
+    // 放在最后是因为它要读本帧的按键状态，而 input::NewFrame() 在帧首。
+    TickNotifications();
+    modules::Tick();
 }
 
 }  // namespace gui
