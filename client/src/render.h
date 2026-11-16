@@ -1,11 +1,18 @@
-// render.h - Direct2D + DirectWrite 覆盖层渲染
+// render.h - Direct2D + DirectWrite 覆盖层渲染（自带交换链）
+//
+// 演进说明：
+//   最初这层是画到游戏 DXGI 交换链的 backbuffer 上的。但实测这个 NetEase
+//   客户端走的是 OpenGL（窗口类名 OGLES，exe 只导入 OPENGL32.dll），
+//   进程里根本没有 DXGI 交换链，Present 钩子永远不触发。
+//
+//   所以改成自带 D3D11 设备 + DirectComposition 合成交换链，画到我们自己的
+//   透明置顶窗口上。对外 API 和之前一致，gui.cpp 不需要任何改动。
 #pragma once
 
 #include <windows.h>
 
 #include <d2d1_1.h>
 #include <dwrite.h>
-#include <dxgi.h>
 
 namespace xiaoyu {
 namespace render {
@@ -36,13 +43,16 @@ inline D2D1_COLOR_F WithAlpha(const D2D1_COLOR_F& c, float a) {
     return o;
 }
 
-bool Init(IDXGISwapChain* sc);
+// 建 D3D11 设备、合成交换链、DirectComposition 视觉树、D2D 上下文。
+// w/h 是覆盖窗口客户区尺寸。
+bool Init(HWND hwnd, int w, int h);
 void Shutdown();
 
-// 交换链被 Resize 时调用：丢掉旧的 backbuffer 目标
-void OnResize();
+// 窗口尺寸变化：重建交换链（backbuffer 尺寸必须和窗口一致）
+void Resize(int w, int h);
 
-bool BeginFrame(IDXGISwapChain* sc);
+// 每帧：拿 backbuffer 当 D2D 目标、清成全透明、BeginDraw
+bool BeginFrame();
 void EndFrame();
 
 int Width();

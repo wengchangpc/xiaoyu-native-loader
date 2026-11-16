@@ -13,9 +13,10 @@ endif()
 # 静态 CRT：目标机不需要装 VC 运行库
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
+# hook.cpp 已从构建里摘掉：这个客户端是 OpenGL 渲染，没有 DXGI 交换链，
+# Present 钩子永远不会触发。文件留着做参考，但不再参与编译。
 add_library(xiaoyu_client SHARED
     src/dllmain.cpp
-    src/hook.cpp
     src/input.cpp
     src/log.cpp
     src/render.cpp
@@ -49,6 +50,8 @@ target_link_libraries(xiaoyu_client PRIVATE
     dwrite
     d3d11
     dxgi
+    dcomp          # DirectComposition：把合成交换链贴到 DWM 上
+    ole32          # CoInitializeEx（DirectComposition 要求）
     kernel32
     user32
     gdi32

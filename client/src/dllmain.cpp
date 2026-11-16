@@ -3,38 +3,30 @@
 // 流程：
 //   DllMain（只能干最轻的活）
 //     └─ 起线程
-//          └─ 建一个临时 D3D11 交换链拿到 vtable，挂 Present
-//               └─ 游戏第一次 Present 时：拿 HWND、子类化窗口、初始化 D2D
-//                    └─ 每帧画覆盖层
+//          └─ 找游戏窗口
+//               └─ 建透明置顶覆盖窗口（D3D11 + DirectComposition）
+//                    └─ 每帧画 GUI
+//
+// 注意：这里**不再 hook 任何图形 API**。
+//   实测这个 NetEase 客户端是 OpenGL 渲染（窗口类名 OGLES，exe 只导入
+//   OPENGL32.dll），进程里没有 DXGI 交换链，Present 钩子永远不会触发。
+//   改成独立的透明覆盖窗口之后，我们和游戏的渲染管线彻底解耦 ——
+//   它用什么图形 API 都无所谓，加壳也影响不到我们。
 //
 // 关于"安全模式"：
-//   如果 C:\Xiaoyu\safe.txt 存在，本 DLL 只写日志、不挂 Present 就直接退出线程。
-//   用来把两类问题分开：
-//     - safe.txt 存在时游戏仍然崩 → 是注入动作本身（大概率是壳的反注入）触发的
-//     - safe.txt 存在时游戏正常    → 是我们的 hook / D2D 代码的问题
+//   如果 C:\Xiaoyu\safe.txt 存在，本 DLL 只写日志就退出线程，
+//   连覆盖窗口都不建。用来把两类问题分开：
+//     - safe.txt 存在时游戏仍然崩 → 是注入动作本身触发的（壳的反注入）
+//     - safe.txt 存在时游戏正常    → 是我们的覆盖层代码的问题
 #include <windows.h>
 
-#include <dxgi.h>
-
-#include "hook.h"
 #include "log.h"
 
 namespace xiaoyu {
-void OnPresent(IDXGISwapChain* sc);
+void StartOverlay();
 }
 
 namespace {
-
-// 把可能抛 SEH 的调用包起来。
-// 注意：函数里不能有需要析构的 C++ 对象，否则 MSVC 会报 C2712。
-bool TryInstall(unsigned long* seh_code) {
-    __try {
-        return xiaoyu::hook::Install(&xiaoyu::OnPresent);
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        *seh_code = GetExceptionCode();
-        return false;
-    }
-}
 
 bool SafeModeEnabled() {
     return GetFileAttributesW(L"C:\\Xiaoyu\\safe.txt") != INVALID_FILE_ATTRIBUTES;
@@ -46,42 +38,25 @@ DWORD WINAPI BootThread(LPVOID param) {
     // 第一步就开日志。log.cpp 是纯 Win32 实现，不碰 CRT 流，
     // 这样任何早期崩溃都能在 native.log 里看到停在哪一行。
     xiaoyu::LogInit();
-    xiaoyu::LogLine("[boot] 1/6 dll attached (build %s %s)", __DATE__, __TIME__);
+    xiaoyu::LogLine("[boot] 1/4 dll attached (build %s %s)", __DATE__, __TIME__);
 
     char exe[MAX_PATH] = {0};
     GetModuleFileNameA(nullptr, exe, MAX_PATH);
-    xiaoyu::LogLine("[boot] 2/6 pid=%lu exe=%s", (unsigned long)GetCurrentProcessId(), exe);
+    xiaoyu::LogLine("[boot] 2/4 pid=%lu exe=%s", (unsigned long)GetCurrentProcessId(), exe);
 
     BOOL wow = FALSE;
     IsWow64Process(GetCurrentProcess(), &wow);
-    xiaoyu::LogLine("[boot] 3/6 wow64=%d (0 = 64 位)", wow ? 1 : 0);
+    xiaoyu::LogLine("[boot] 3/4 wow64=%d (0 = 64 位)", wow ? 1 : 0);
 
     if (SafeModeEnabled()) {
-        xiaoyu::LogLine("[boot] safe.txt found -- 不挂 Present，线程直接退出");
+        xiaoyu::LogLine("[boot] safe.txt found -- 只写日志，不建覆盖层");
         xiaoyu::LogLine("[boot] 如果游戏此时正常，说明注入没问题，问题在覆盖层");
         return 0;
     }
 
-    // 等一下：有些保护会在进程刚起来时扫模块，太急容易被盯上
-    Sleep(1500);
-    xiaoyu::LogLine("[boot] 4/6 开始挂 Present");
-
-    for (int attempt = 0; attempt < 5; ++attempt) {
-        unsigned long seh = 0;
-        if (TryInstall(&seh)) {
-            xiaoyu::LogLine("[hook] ok on attempt %d", attempt + 1);
-            return 0;
-        }
-        if (seh != 0) {
-            xiaoyu::LogLine("[hook] attempt %d 抛异常 code=0x%08lX", attempt + 1, seh);
-        } else {
-            xiaoyu::LogLine("[hook] attempt %d failed, retrying", attempt + 1);
-        }
-        Sleep(1000);
-    }
-
-    xiaoyu::LogLine("[hook] gave up -- 覆盖层没有挂上");
-    return 1;
+    xiaoyu::LogLine("[boot] 4/4 启动覆盖层线程");
+    xiaoyu::StartOverlay();
+    return 0;
 }
 
 }  // namespace
