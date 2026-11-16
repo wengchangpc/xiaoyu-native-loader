@@ -22,6 +22,7 @@ add_library(xiaoyu_client SHARED
     src/render.cpp
     src/config.cpp
     src/gui.cpp
+    src/modules.cpp
     src/overlay.cpp
 )
 
