@@ -1158,11 +1158,11 @@ void OnFrame() {
             DrawPanel(g_panels[i], false);
         }
 
-        // 系统光标不可见时（游戏把全局光标藏了）补一个自己的指针。
-        // 只在"真的看不见"时画，避免和系统光标叠成两个。
-        // 相对模式下系统光标停在原地不动，必须画自己的；
-        // 透视情况下（面板没开）游戏隐藏光标时也补一个
-        if (input::RelativeMode() || !SystemCursorVisible()) {
+        // 只在"系统光标真的看不见"时补一个自己的指针。
+        // 面板打开期间我们只是接管了游戏的 Raw Input，Windows 仍在正常
+        // 移动系统光标，GetCursorPos 是准的 —— 这时候再画一个就会出现
+        // "两个光标一起动"。唯一需要自绘的情况是游戏把全局光标藏了。
+        if (!SystemCursorVisible()) {
             DrawSoftwareCursor(input::X(), input::Y());
         }
     }

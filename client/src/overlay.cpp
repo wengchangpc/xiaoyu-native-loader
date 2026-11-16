@@ -112,8 +112,9 @@ HWND FindGameWindow() {
 // 于是游戏收不到位移、视角冻结，但它不失焦、不弹菜单、照常渲染；
 // 面板关闭时把注册还给游戏窗口，视角立刻恢复。
 //
-// 代价：游戏不再维护光标，系统光标停在原地。所以坐标改用相对位移累加
-// （input::SetRelativeMode），由我们画一个软件光标。
+// 代价：游戏不再维护光标。但 **Windows 自己会继续移动系统光标**，
+// GetCursorPos 读到的位置始终是准的 —— 所以面板里直接用系统光标即可。
+// 千万不要在这里切进相对光标模式再自绘一个，那会出现"两个光标一起动"。
 bool g_raw_hooked = false;      // 只在状态真正切换时打日志
 ULONGLONG g_raw_reassert_at = 0;
 
@@ -143,7 +144,9 @@ void HookMouseToOverlay(bool on) {
     // 面板打开期间每秒重申一次，确保冻结是持续的。
     if (g_raw_hooked != on) {
         g_raw_hooked = on;
-        input::SetRelativeMode(on);
+        // 注意：不要在这里开 input 的相对光标模式。
+        // 游戏收不到位移之后就不再管光标了，Windows 会照常移动系统光标，
+        // GetCursorPos 是准的；再自绘一个虚拟光标就会出现"两个光标一起动"。
         LogLine("[overlay] 鼠标 Raw Input -> %s", on ? "覆盖层（游戏视角冻结）" : "游戏");
     }
 }
@@ -251,6 +254,20 @@ void ToggleGameCursorRelease(const char* why, bool verify) {
     g_unlock_check_at = GetTickCount64() + 400;
 }
 
+// 把光标锁在游戏客户区里。
+// 面板打开时游戏已经不管光标了，如果让它跑到窗口外点到别的窗口，
+// 游戏会失焦并弹出 Esc 菜单。窗口被移动/改尺寸后锁定区域会过期，
+// 所以调用方要定期重设。
+void ClipToGameClient() {
+    if (g_game == nullptr || !IsWindow(g_game)) return;
+    RECT cr = {};
+    if (!GetClientRect(g_game, &cr)) return;
+    POINT tl = {0, 0};
+    ClientToScreen(g_game, &tl);
+    RECT clip = {tl.x, tl.y, tl.x + (cr.right - cr.left), tl.y + (cr.bottom - cr.top)};
+    ClipCursor(&clip);
+}
+
 // 面板可见性变化时切换命中测试模式
 void UpdateInputMode() {
     if (g_overlay == nullptr) return;
@@ -277,6 +294,7 @@ void UpdateInputMode() {
                      SWP_FRAMECHANGED);
 
     if (want) {
+        ClipToGameClient();
         // 不再抢前台。失焦会让基岩版弹出自己的 Esc 菜单，
         // 那个菜单既会跟 GUI 抢置顶，又会在关掉 GUI 之后继续暂停游戏。
         // 改成接管鼠标的 Raw Input：游戏收不到位移就等于视角冻结，
@@ -287,6 +305,9 @@ void UpdateInputMode() {
         // 顺便让渲染层在下一帧做一次像素自检，把面板的实际绘制范围写进日志
         render::RequestSelfCheck();
     } else {
+        // 必须解掉打开时加的光标锁定。ClipCursor 是桌面级共享状态，
+        // 不解的话光标出了客户区就再也回不来，整个系统都受影响。
+        ClipCursor(nullptr);
         HookMouseToOverlay(false);
         // 把前台还给游戏，视角控制立刻恢复
         if (cfg::TakeFocus()) ReleaseToGame();
@@ -512,6 +533,8 @@ int OverlayMain() {
                 if (now >= g_raw_reassert_at) {
                     g_raw_reassert_at = now + 1000;
                     HookMouseToOverlay(true);
+                    // 窗口可能被拖动或改过尺寸，锁定区域跟着刷新一次
+                    ClipToGameClient();
                 }
             }
             RenderOnce();
@@ -598,7 +621,9 @@ int OverlayMain() {
         }
     }
 
-    // 退出前必须把鼠标 Raw Input 还给游戏，否则游戏视角会一直锁着
+    // 退出前必须把鼠标 Raw Input 还给游戏，否则游戏视角会一直锁着；
+    // 光标锁定同理，不解的话整个桌面的光标都出不了游戏窗口。
+    ClipCursor(nullptr);
     HookMouseToOverlay(false);
     render::Shutdown();
     if (g_overlay != nullptr) DestroyWindow(g_overlay);
