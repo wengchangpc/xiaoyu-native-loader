@@ -63,6 +63,11 @@ int Height();
 
 void Rect(float x, float y, float w, float h, const D2D1_COLOR_F& c);
 void RoundRect(float x, float y, float w, float h, float r, const D2D1_COLOR_F& c);
+// 圆角描边（只画边框）。t 是线宽，向内收 t/2，避免线条糊出面板轮廓。
+void RoundRectStroke(float x, float y, float w, float h, float r, float t,
+                     const D2D1_COLOR_F& c);
+// 任意闭合多边形（软件鼠标指针用）
+void Polygon(const D2D1_POINT_2F* pts, int count, const D2D1_COLOR_F& c);
 void Line(float x1, float y1, float x2, float y2, float width, const D2D1_COLOR_F& c);
 void Text(const wchar_t* s, float x, float y, float w, float h, float size,
           const D2D1_COLOR_F& c, int align = ALIGN_LEFT, bool bold = false);

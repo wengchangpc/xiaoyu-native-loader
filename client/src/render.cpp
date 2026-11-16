@@ -336,6 +336,44 @@ void Line(float x1, float y1, float x2, float y2, float width, const D2D1_COLOR_
     g_rt->DrawLine(D2D1::Point2F(x1, y1), D2D1::Point2F(x2, y2), g_brush.Get(), width);
 }
 
+void RoundRectStroke(float x, float y, float w, float h, float r, float t,
+                     const D2D1_COLOR_F& c) {
+    if (g_rt == nullptr || g_brush == nullptr || w <= 0.0f || h <= 0.0f || t <= 0.0f) return;
+    // 线宽是沿着路径居中展开的，所以路径本身要向内收 t/2，否则外侧半条线会
+    // 溢出面板轮廓，在透明背景上糊出一圈毛边。
+    const float inset = t * 0.5f;
+    const float inner_w = w - t;
+    const float inner_h = h - t;
+    if (inner_w <= 0.0f || inner_h <= 0.0f) return;
+    float rr = r - inset;
+    if (rr < 0.0f) rr = 0.0f;
+    if (rr > inner_w * 0.5f) rr = inner_w * 0.5f;
+    if (rr > inner_h * 0.5f) rr = inner_h * 0.5f;
+    g_brush->SetColor(c);
+    g_rt->DrawRoundedRectangle(
+        D2D1::RoundedRect(
+            D2D1::RectF(x + inset, y + inset, x + w - inset, y + h - inset), rr, rr),
+        g_brush.Get(), t);
+}
+
+void Polygon(const D2D1_POINT_2F* pts, int count, const D2D1_COLOR_F& c) {
+    if (g_rt == nullptr || g_brush == nullptr || g_factory == nullptr) return;
+    if (pts == nullptr || count < 3) return;
+
+    ComPtr<ID2D1PathGeometry> geo;
+    if (FAILED(g_factory->CreatePathGeometry(&geo)) || geo == nullptr) return;
+    ComPtr<ID2D1GeometrySink> sink;
+    if (FAILED(geo->Open(&sink)) || sink == nullptr) return;
+
+    sink->BeginFigure(pts[0], D2D1_FIGURE_BEGIN_FILLED);
+    sink->AddLines(pts + 1, (UINT32)(count - 1));
+    sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+    if (FAILED(sink->Close())) return;   // Close 失败时几何不能用，别再往下画
+
+    g_brush->SetColor(c);
+    g_rt->FillGeometry(geo.Get(), g_brush.Get());
+}
+
 void Text(const wchar_t* s, float x, float y, float w, float h, float size,
           const D2D1_COLOR_F& c, int align, bool bold) {
     if (g_rt == nullptr || g_brush == nullptr || s == nullptr || *s == L'\0') return;

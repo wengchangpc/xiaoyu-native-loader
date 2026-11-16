@@ -45,6 +45,8 @@ bool g_visible = false;
 bool g_interactive = false;
 bool g_running = false;
 ULONGLONG g_unlock_check_at = 0;  // 合成解锁键之后多久去确认一次效果
+int g_unlock_vk = 0;              // 这次合成的是哪个键
+int g_unlock_stage = 0;           // 0=空闲 1=已 SendInput 2=已投递窗口消息
 
 struct FindCtx {
     DWORD pid;
@@ -123,11 +125,39 @@ void RegisterWheelSink(bool on) {
 // 游戏自己把光标锁在窗口里，外部 ClipCursor(nullptr) 会被它下一帧重新设回去
 // （实测每帧解一次也没用）。用户手动按 Alt 能解锁，说明这是游戏自己的绑定，
 // 那就替用户按一下 —— 打开面板时按一次，关掉时再按一次恢复，正好对称。
-void ToggleGameCursorRelease(const char* why) {
+//
+// 合成有两条路：
+//   A. SendInput —— 走系统输入队列，最"真"，但注入事件带 LLKHF_INJECTED 标记，
+//      有些客户端/反作弊会直接丢掉；
+//   B. PostMessage WM_SYSKEYDOWN —— 直接投给游戏自己的 WndProc，不经过
+//      SendInput 的标记检查，代价是只对"从窗口消息读键盘"的客户端有效。
+// 先走 A，400ms 后看光标是否还被裁剪；还锁着就退到 B 再试一次。
+void PostKeyToGame(int vk, bool down) {
+    if (g_game == nullptr || !IsWindow(g_game)) return;
+    const bool menu_key = (vk == VK_MENU || vk == VK_LMENU || vk == VK_RMENU);
+    const UINT msg = down ? (menu_key ? WM_SYSKEYDOWN : WM_KEYDOWN)
+                          : (menu_key ? WM_SYSKEYUP : WM_KEYUP);
+    LPARAM lp = 1;
+    lp |= (LPARAM)(MapVirtualKeyW((UINT)vk, MAPVK_VK_TO_VSC) & 0xFF) << 16;
+    if (!down) lp |= (LPARAM)3 << 30;   // 重复 1 次 + 前一个状态为按下
+    PostMessageW(g_game, msg, (WPARAM)vk, lp);
+}
+
+// verify：只有"打开面板"这次需要回头看效果。关面板时按完就把鼠标还给游戏了，
+// 这时候去查裁剪状态只会得到 1（游戏重新抓住），日志会误导人。
+void ToggleGameCursorRelease(const char* why, bool verify) {
     int vk = cfg::UnlockKey();
     LogLine("[overlay] 合成解锁键 vk=0x%02X（%s），当前是否被裁剪=%d", vk, why,
             input::IsCursorClipped() ? 1 : 0);
     input::SendKeyTap(vk);
+    if (!verify) {
+        g_unlock_stage = 0;
+        g_unlock_check_at = 0;
+        return;
+    }
+    g_unlock_vk = vk;
+    g_unlock_stage = 1;
+    g_unlock_check_at = GetTickCount64() + 400;
 }
 
 // 面板可见性变化时切换命中测试模式
@@ -155,18 +185,15 @@ void UpdateInputMode() {
     if (want) {
         // 面板打开时解除游戏的鼠标裁剪，免得光标被困在窗口里
         ClipCursor(nullptr);
-        // 替用户按一下游戏自己的"释放鼠标"键
-        if (cfg::AutoUnlock()) {
-            ToggleGameCursorRelease("打开面板");
-            g_unlock_check_at = GetTickCount64() + 400;
-        }
+        // 替用户按一下游戏自己的"释放鼠标"键（内部会把校验时间点排好）
+        if (cfg::AutoUnlock()) ToggleGameCursorRelease("打开面板", true);
         RegisterWheelSink(true);
         // 顺便让渲染层在下一帧做一次像素自检，把面板的实际绘制范围写进日志
         render::RequestSelfCheck();
     } else {
         RegisterWheelSink(false);
         // 关掉面板时把鼠标交回游戏，不然游戏里会一直没有视角控制
-        if (cfg::AutoUnlock()) ToggleGameCursorRelease("关闭面板");
+        if (cfg::AutoUnlock()) ToggleGameCursorRelease("关闭面板", false);
     }
     LogLine("[overlay] 输入模式 -> %s", want ? "接管鼠标" : "点击穿透");
 }
@@ -377,8 +404,34 @@ int OverlayMain() {
             // 合成解锁键之后确认一次效果，方便判断这个绑定到底管不管用
             if (g_unlock_check_at != 0 && GetTickCount64() >= g_unlock_check_at) {
                 g_unlock_check_at = 0;
-                LogLine("[overlay] 解锁检查：cursor_clipped=%d（0 表示游戏已交还鼠标）",
-                        input::IsCursorClipped() ? 1 : 0);
+                const bool clipped = input::IsCursorClipped();
+                if (g_unlock_stage == 1) {
+                    LogLine("[overlay] 解锁检查 1/2（SendInput）：cursor_clipped=%d",
+                            clipped ? 1 : 0);
+                    if (!clipped) {
+                        g_unlock_stage = 0;
+                    } else {
+                        // SendInput 没生效：要么被注入标记过滤，要么游戏根本不看
+                        // 系统输入队列。换成直接往游戏窗口投键盘消息再试一次。
+                        LogLine("[overlay] SendInput 无效，改用 PostMessage 投递 vk=0x%02X",
+                                g_unlock_vk);
+                        PostKeyToGame(g_unlock_vk, true);
+                        PostKeyToGame(g_unlock_vk, false);
+                        g_unlock_stage = 2;
+                        g_unlock_check_at = GetTickCount64() + 400;
+                    }
+                } else if (g_unlock_stage == 2) {
+                    g_unlock_stage = 0;
+                    LogLine("[overlay] 解锁检查 2/2（PostMessage）：cursor_clipped=%d",
+                            clipped ? 1 : 0);
+                    if (clipped) {
+                        LogLine("[overlay] 两条路都没解开光标。可行做法：把 "
+                                "C:\\Xiaoyu\\native_config.txt 里的 unlockkey 改成游戏实际的"
+                                "释放键（vkid 见同目录键码表），或 unlock=0 继续手动按");
+                    }
+                } else {
+                    LogLine("[overlay] 解锁检查：cursor_clipped=%d", clipped ? 1 : 0);
+                }
             }
 
             ULONGLONG now = GetTickCount64();

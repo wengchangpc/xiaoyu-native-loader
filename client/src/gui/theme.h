@@ -38,6 +38,8 @@ inline const D2D1_COLOR_F kTrack = render::Rgba(255, 255, 255, 36);
 inline const D2D1_COLOR_F kScrollTrack = render::Rgba(255, 255, 255, 26);
 inline const D2D1_COLOR_F kScrollThumb = render::Rgba(255, 255, 255, 102);
 inline const D2D1_COLOR_F kScrollThumbHot = render::Rgba(255, 255, 255, 150);
+// 面板外描边：游戏画面上纯黑面板容易糊在一起，加一根几乎看不见的亮边把轮廓托出来
+inline const D2D1_COLOR_F kRim = render::Rgba(255, 255, 255, 26);
 
 }  // namespace theme
 }  // namespace xiaoyu

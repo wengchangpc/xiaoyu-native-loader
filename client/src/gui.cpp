@@ -296,6 +296,9 @@ void DrawPanelChrome(const Panel& p, bool hover_head) {
     const wchar_t* arrow = p.collapsed ? L"\u25B8" : L"\u25BE";
     render::Text(arrow, p.x + p.w - 16.0f * s, p.y, 12.0f * s, kHeadH * s,
                  title_size, theme::kArrow, ALIGN_LEFT, false);
+
+    // 外描边放最后画：先画会被栏头底色盖掉顶边那一截
+    render::RoundRectStroke(p.x, p.y, p.w, p.h, r, 1.0f, theme::kRim);
 }
 
 // 滚动条几何。原来滚动条是"只画不响应"的 —— g_drag_scrollbar 从来没被赋值，
@@ -720,6 +723,34 @@ int Cps() {
     return n;
 }
 
+// 系统光标现在是否可见。游戏进入鼠标捕获模式时会 ShowCursor(FALSE)，
+// 那是它自己线程里的计数，我们从外面 ShowCursor(TRUE) 是改不动的，
+// 所以只能自己判断、自己补一个指针。
+bool SystemCursorVisible() {
+    CURSORINFO ci = {};
+    ci.cbSize = sizeof(ci);
+    if (!GetCursorInfo(&ci)) return true;   // 查不到就当可见，少画比多画安全
+    return (ci.flags & CURSOR_SHOWING) != 0;
+}
+
+// 画一个系统风格的箭头指针：先铺一层放大的深色轮廓，再填白色本体。
+void DrawSoftwareCursor(float x, float y) {
+    static const float kPts[7][2] = {
+        {0.0f, 0.0f},   {0.0f, 16.0f},  {4.2f, 12.4f}, {6.9f, 17.9f},
+        {9.7f, 16.5f},  {7.1f, 11.1f},  {12.6f, 11.1f}};
+    const float k = 1.15f;
+    D2D1_POINT_2F rim[7];
+    D2D1_POINT_2F body[7];
+    for (int i = 0; i < 7; ++i) {
+        body[i].x = x + kPts[i][0] * k;
+        body[i].y = y + kPts[i][1] * k;
+        rim[i].x = x + kPts[i][0] * k * 1.14f - 0.6f;
+        rim[i].y = y + kPts[i][1] * k * 1.14f - 0.6f;
+    }
+    render::Polygon(rim, 7, render::RgbaF(0.0f, 0.0f, 0.0f, 0.72f));
+    render::Polygon(body, 7, render::RgbaF(1.0f, 1.0f, 1.0f, 0.96f));
+}
+
 void DrawHud() {
     const float s = g_s;
     const float viewW = (float)render::Width();
@@ -928,11 +959,9 @@ void OnFrame() {
             DrawPanel(g_panels[i], false);
         }
 
-        // 鼠标指针（游戏自己把光标藏了，这里补一个）
-        float mx = input::X();
-        float my = input::Y();
-        render::RoundRect(mx, my, 2.0f, 12.0f, 1.0f, theme::kAccent);
-        render::RoundRect(mx - 3.0f, my, 8.0f, 3.0f, 1.5f, theme::kAccent);
+        // 系统光标不可见时（游戏把全局光标藏了）补一个自己的指针。
+        // 只在"真的看不见"时画，避免和系统光标叠成两个。
+        if (!SystemCursorVisible()) DrawSoftwareCursor(input::X(), input::Y());
     }
 
     DrawHud();
