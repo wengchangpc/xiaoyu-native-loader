@@ -707,7 +707,7 @@ void DrawPanel(Panel& p, bool interactive) {
         if (body_inside && !p.collapsed && input::Wheel() != 0.0f) {
             float max_scroll = p.content_h - p.max_body;
             if (max_scroll > 0.0f) {
-                p.scroll -= input::Wheel() * 24.0f * s;
+                p.scroll -= input::Wheel() * 28.0f * s;   // 原版 _niloreScrollAt 的步长
                 if (p.scroll < 0.0f) p.scroll = 0.0f;
                 if (p.scroll > max_scroll) p.scroll = max_scroll;
                 g_scroll[p.group] = p.scroll;
