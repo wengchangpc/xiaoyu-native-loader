@@ -110,6 +110,20 @@ HWND FindGameWindow() {
 // 现在滚轮交给 input.cpp 里的 WH_MOUSE_LL 钩子，那是另一条通道，
 // 不碰 Raw Input 的注册表。
 
+// 兜底路径：合成游戏自己的"释放鼠标"键。
+// 默认关闭（cfg::AutoUnlock() 为假）。只有 focus=0 且这条路的键位确实
+// 对得上时才用 —— 之前连按两次会把游戏卡在光标模式里。
+void PostKeyToGame(int vk, bool down) {
+    if (g_game == nullptr || !IsWindow(g_game)) return;
+    const bool menu_key = (vk == VK_MENU || vk == VK_LMENU || vk == VK_RMENU);
+    const UINT msg = down ? (menu_key ? WM_SYSKEYDOWN : WM_KEYDOWN)
+                          : (menu_key ? WM_SYSKEYUP : WM_KEYUP);
+    LPARAM lp = 1;
+    lp |= (LPARAM)(MapVirtualKeyW((UINT)vk, MAPVK_VK_TO_VSC) & 0xFF) << 16;
+    if (!down) lp |= (LPARAM)3 << 30;   // 重复 1 次 + 前一个状态为按下
+    PostMessageW(g_game, msg, (WPARAM)vk, lp);
+}
+
 // 把前台/焦点强行交给 target。
 // 关键前提：覆盖窗口是注入到游戏进程里创建的，和游戏窗口同属一个进程，
 // 所以这是进程内的焦点切换，不受 SetForegroundWindow 的跨进程限制。
