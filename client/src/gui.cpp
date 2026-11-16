@@ -88,7 +88,11 @@ bool AnyPanelDragging() { return g_drag_panel >= 0 || g_drag_slider >= 0 ||
                                  g_drag_scrollbar >= 0; }
 
 const wchar_t* FeatName(int i) {
-    return cfg::Chinese() ? kFeatures[i].zh : kFeatures[i].en;
+    // 原版 CHINESE_FEATURES 里有个别模块没有中文名（比如 WalkVoid 的 zh 是 nullptr），
+    // 直接返回 nullptr 会让 render::Text 早退，那一行就成了空白 —— 这里回退到英文名。
+    const wchar_t* zh = kFeatures[i].zh;
+    if (cfg::Chinese() && zh != nullptr) return zh;
+    return kFeatures[i].en;
 }
 
 const wchar_t* GroupName(int g) {
