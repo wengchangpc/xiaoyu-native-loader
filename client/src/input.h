@@ -51,8 +51,25 @@ bool HotkeyPressed();
 // 用来替用户按游戏的"释放鼠标"键，免得每次开面板都要手动按一下。
 void SendKeyTap(int vk);
 
-// 鼠标是否还被裁剪在某个矩形里（游戏抓着光标时为真）
+// 鼠标是否还被裁剪在某个矩形里。
+// 注意：这个客户端根本不用 ClipCursor，它靠"隐藏系统光标 + Raw Input 相对位移"
+// 来锁视角，所以这个函数在它身上恒为 false，不能拿来判断"是否已捕获"。
 bool IsCursorClipped();
+
+// 系统光标现在是否可见。游戏处于鼠标捕获模式时会 ShowCursor(FALSE)，
+// 所以这个才是判断"游戏有没有抓住鼠标"的可靠指标。
+bool CursorVisible();
+
+// 低级鼠标钩子（WH_MOUSE_LL）的两个用途，按需开关，内部引用计数。
+//   SetWheelWanted  : 面板打开期间收滚轮（钩子不影响 Raw Input，
+//                      这一点非常关键 —— 见 overlay.cpp 里旧代码的注释）
+//   SetPhysicalWanted: 自动连点需要知道"物理左键是不是按着"，
+//                      要靠 MSLLHOOKSTRUCT.flags 里的 LLMHF_INJECTED 过滤自己注入的事件
+void SetWheelWanted(bool on);
+void SetPhysicalWanted(bool on);
+
+// 物理（非注入）左键是否按下
+bool PhysLeftDown();
 
 }  // namespace input
 }  // namespace xiaoyu

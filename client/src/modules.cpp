@@ -116,40 +116,11 @@ void TapMouse() {
 }
 
 // ── 物理鼠标按键 ────────────────────────────────────────────────
-// 为什么非要挂钩子：SendInput 注入的 LEFTUP 会把 GetAsyncKeyState 一起改掉，
-// 于是"玩家还按着吗"这个判断会失真 —— 更糟的是我们每注入一次 DOWN 又刷新了
-// 自己的判定，连点就永远停不下来。
-//
-// WH_MOUSE_LL 的 MSLLHOOKSTRUCT.flags 里有 LLMHF_INJECTED，能明确区分
-// 物理事件和注入事件。只认物理事件，问题就没了。钩子只在 AC 打开期间挂着。
-HHOOK g_mouse_hook = nullptr;
-volatile LONG g_phys_left = 0;
-
-LRESULT CALLBACK MouseHookProc(int code, WPARAM wp, LPARAM lp) {
-    if (code == HC_ACTION) {
-        const MSLLHOOKSTRUCT* ms = reinterpret_cast<const MSLLHOOKSTRUCT*>(lp);
-        if (ms != nullptr && (ms->flags & LLMHF_INJECTED) == 0) {
-            if (wp == WM_LBUTTONDOWN) g_phys_left = 1;
-            else if (wp == WM_LBUTTONUP) g_phys_left = 0;
-        }
-    }
-    return CallNextHookEx(nullptr, code, wp, lp);
-}
-
-void EnsureMouseHook(bool on) {
-    if (on && g_mouse_hook == nullptr) {
-        g_mouse_hook = SetWindowsHookExW(WH_MOUSE_LL, MouseHookProc,
-                                         GetModuleHandleW(nullptr), 0);
-        if (g_mouse_hook == nullptr) {
-            LogLine("[mod] 装鼠标钩子失败 err=%lu，自动连点将不可用",
-                    (unsigned long)GetLastError());
-        }
-    } else if (!on && g_mouse_hook != nullptr) {
-        UnhookWindowsHookEx(g_mouse_hook);
-        g_mouse_hook = nullptr;
-        g_phys_left = 0;
-    }
-}
+// 判定"玩家还按着左键吗"不能用 GetAsyncKeyState：我们每注入一次 LEFTDOWN
+// 就把自己的判定刷了一次，玩家松手之后连点会永远停不下来。
+// 真正的物理状态由 input.cpp 的 WH_MOUSE_LL 钩子记录（它用
+// MSLLHOOKSTRUCT.flags 里的 LLMHF_INJECTED 把注入事件过滤掉）。
+// 钩子的开关也归 input 管，这里只负责提需求。
 
 // ── 各模块状态 ──────────────────────────────────────────────────
 bool g_sprint_held = false;
@@ -175,7 +146,7 @@ void TickAutoClicker() {
     const ULONGLONG now = GetTickCount64();
     // 用钩子记录的物理状态，不看 GetAsyncKeyState —— 后者会被我们自己的
     // 注入事件带跑，连点会停不下来
-    const bool held = g_phys_left != 0;
+    const bool held = input::PhysLeftDown();
     if (!held) {
         if (g_mouse_down) MouseUp();
         g_ac_next_click = 0;
@@ -296,14 +267,14 @@ void Tick() {
     // 面板一打开就立刻停手：我们的合成点击会激活游戏窗口，
     // 前台被抢回去之后面板就点不动了。
     if (gui::Visible()) {
-        EnsureMouseHook(false);   // 面板打开时把钩子摘掉，别让输入多绕一圈
+        input::SetPhysicalWanted(false);   // 面板打开时把钩子摘掉，别让输入多绕一圈
         ReleaseAll();
         return;
     }
-    // AC 打开时才挂物理鼠标钩子，其余时间不增加任何输入延迟
+    // AC 打开时才要求挂物理鼠标钩子，其余时间不增加任何输入延迟
     {
         const int ac = FindFeature(L"AC");
-        EnsureMouseHook(ac >= 0 && cfg::ModuleOn(ac) && !gui::Visible());
+        input::SetPhysicalWanted(ac >= 0 && cfg::ModuleOn(ac) && !gui::Visible());
     }
     TickAutoClicker();
     TickSprint();

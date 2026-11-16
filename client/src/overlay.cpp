@@ -101,48 +101,14 @@ HWND FindGameWindow() {
 }
 
 // ── 滚轮 ────────────────────────────────────────────────────────
-// WM_MOUSEWHEEL 只发给"有焦点"的窗口，而我们是 WS_EX_NOACTIVATE，
-// 焦点永远在游戏那边，所以正常途径收不到滚轮（实测面板滚不动就是这个原因）。
+// 血泪教训，别改回去：
+// 这里原来用 RegisterRawInputDevices(usagePage=1, usage=2, RIDEV_INPUTSINK) 收滚轮，
+// 关面板时再 RIDEV_REMOVE。Raw Input 的注册是**按进程按设备类型唯一**的，
+// 我们的 RIDEV_REMOVE 把游戏自己那份鼠标注册也一起删了 —— 而游戏正是靠它
+// 读相对位移来转视角。表现就是：只要开过一次面板，之后视角永远不能转。
 //
-// 改用 Raw Input 的 RIDEV_INPUTSINK：窗口不在前台也能收到 WM_INPUT。
-// 只在面板打开期间注册 —— INPUTSINK 会把每一条鼠标消息都投过来，
-// 高刷新率鼠标一秒上千条，没必要一直挂着。
-void RegisterWheelSink(bool on) {
-    if (g_overlay == nullptr) return;
-    RAWINPUTDEVICE rid = {};
-    rid.usUsagePage = 0x01;   // Generic Desktop Controls
-    rid.usUsage = 0x02;       // Mouse
-    rid.dwFlags = on ? RIDEV_INPUTSINK : RIDEV_REMOVE;
-    rid.hwndTarget = on ? g_overlay : nullptr;
-    if (!RegisterRawInputDevices(&rid, 1, sizeof(rid))) {
-        LogLine("[overlay] RegisterRawInputDevices(%d) failed err=%lu", on ? 1 : 0,
-                (unsigned long)GetLastError());
-    } else if (on) {
-        LogLine("[overlay] 已挂上 Raw Input 滚轮接收");
-    }
-}
-
-// 让游戏交还鼠标。
-// 游戏自己把光标锁在窗口里，外部 ClipCursor(nullptr) 会被它下一帧重新设回去
-// （实测每帧解一次也没用）。用户手动按 Alt 能解锁，说明这是游戏自己的绑定，
-// 那就替用户按一下 —— 打开面板时按一次，关掉时再按一次恢复，正好对称。
-//
-// 合成有两条路：
-//   A. SendInput —— 走系统输入队列，最"真"，但注入事件带 LLKHF_INJECTED 标记，
-//      有些客户端/反作弊会直接丢掉；
-//   B. PostMessage WM_SYSKEYDOWN —— 直接投给游戏自己的 WndProc，不经过
-//      SendInput 的标记检查，代价是只对"从窗口消息读键盘"的客户端有效。
-// 先走 A，400ms 后看光标是否还被裁剪；还锁着就退到 B 再试一次。
-void PostKeyToGame(int vk, bool down) {
-    if (g_game == nullptr || !IsWindow(g_game)) return;
-    const bool menu_key = (vk == VK_MENU || vk == VK_LMENU || vk == VK_RMENU);
-    const UINT msg = down ? (menu_key ? WM_SYSKEYDOWN : WM_KEYDOWN)
-                          : (menu_key ? WM_SYSKEYUP : WM_KEYUP);
-    LPARAM lp = 1;
-    lp |= (LPARAM)(MapVirtualKeyW((UINT)vk, MAPVK_VK_TO_VSC) & 0xFF) << 16;
-    if (!down) lp |= (LPARAM)3 << 30;   // 重复 1 次 + 前一个状态为按下
-    PostMessageW(g_game, msg, (WPARAM)vk, lp);
-}
+// 现在滚轮交给 input.cpp 里的 WH_MOUSE_LL 钩子，那是另一条通道，
+// 不碰 Raw Input 的注册表。
 
 // 把前台/焦点强行交给 target。
 // 关键前提：覆盖窗口是注入到游戏进程里创建的，和游戏窗口同属一个进程，
@@ -197,6 +163,12 @@ void TakeForeground() {
 void ReleaseToGame() {
     if (g_game == nullptr || !IsWindow(g_game)) return;
     ForceForeground(g_game);
+
+    // 有些客户端不看 SetForegroundWindow 的结果，只认 WM_ACTIVATE。
+    // 补发一条 WA_ACTIVE，让它的输入循环重新跑"抢回鼠标"那段逻辑。
+    PostMessageW(g_game, WM_ACTIVATEAPP, TRUE, (LPARAM)GetCurrentThreadId());
+    PostMessageW(g_game, WM_ACTIVATE, MAKEWPARAM(WA_ACTIVE, 0), 0);
+
     RECT rc = {};
     if (GetClientRect(g_game, &rc)) {
         POINT c;
@@ -206,7 +178,8 @@ void ReleaseToGame() {
         SetCursorPos(c.x, c.y);
     }
     g_release_check_at = GetTickCount64() + 400;
-    LogLine("[overlay] 前台已交还游戏 hwnd=%p", (void*)g_game);
+    LogLine("[overlay] 前台已交还游戏 hwnd=%p cursor_visible=%d", (void*)g_game,
+            input::CursorVisible() ? 1 : 0);
 }
 
 // verify：只有"打开面板"这次需要回头看效果。关面板时按完就把鼠标还给游戏了，
@@ -255,11 +228,11 @@ void UpdateInputMode() {
         if (cfg::TakeFocus()) TakeForeground();
         // 兜底路径：有些客户端失焦也不会放开，那才轮到合成键（默认关）
         if (cfg::AutoUnlock()) ToggleGameCursorRelease("打开面板", true);
-        RegisterWheelSink(true);
+        input::SetWheelWanted(true);
         // 顺便让渲染层在下一帧做一次像素自检，把面板的实际绘制范围写进日志
         render::RequestSelfCheck();
     } else {
-        RegisterWheelSink(false);
+        input::SetWheelWanted(false);
         // 把前台还给游戏，视角控制立刻恢复
         if (cfg::TakeFocus()) ReleaseToGame();
         if (cfg::AutoUnlock()) ToggleGameCursorRelease("关闭面板", false);
@@ -330,22 +303,6 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_MOUSEWHEEL:
             input::AddWheel((float)GET_WHEEL_DELTA_WPARAM(wp) / (float)WHEEL_DELTA);
             return 0;
-
-        case WM_INPUT: {
-            // Raw Input 送来的滚轮。面板打开时我们挂了 RIDEV_INPUTSINK，
-            // 所以窗口没焦点也能收到。
-            RAWINPUT raw = {};
-            UINT size = sizeof(raw);
-            if (GetRawInputData((HRAWINPUT)lp, RID_INPUT, &raw, &size,
-                                sizeof(RAWINPUTHEADER)) != (UINT)-1) {
-                if (raw.header.dwType == RIM_TYPEMOUSE &&
-                    (raw.data.mouse.usButtonFlags & RI_MOUSE_WHEEL)) {
-                    short delta = (short)raw.data.mouse.usButtonData;
-                    input::AddWheel((float)delta / (float)WHEEL_DELTA);
-                }
-            }
-            break;  // 不吞，继续交给 DefWindowProc
-        }
 
         case WM_ERASEBKGND:
             return 1;  // 内容全由 DComp 合成，别让 GDI 刷一层底色
@@ -525,11 +482,15 @@ int OverlayMain() {
                 }
             }
 
-            // 关面板交还焦点后确认一次：游戏有没有重新把鼠标抓回去
+            // 关面板交还焦点后确认一次。
+            // 判断依据是"系统光标有没有被游戏藏起来"：这个客户端不用 ClipCursor，
+            // 它锁视角的方式是 ShowCursor(FALSE) + Raw Input 相对位移，
+            // 所以 cursor_clipped 在这里恒为 0，拿它判断永远看不出问题。
             if (g_release_check_at != 0 && GetTickCount64() >= g_release_check_at) {
                 g_release_check_at = 0;
-                LogLine("[overlay] 交还焦点后检查：cursor_clipped=%d（1 表示游戏已重新捕获鼠标）",
-                        input::IsCursorClipped() ? 1 : 0);
+                const bool vis = input::CursorVisible();
+                LogLine("[overlay] 交还检查：cursor_visible=%d（0 = 游戏已重新隐藏光标，捕获正常）",
+                        vis ? 1 : 0);
             }
 
             ULONGLONG now = GetTickCount64();

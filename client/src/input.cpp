@@ -164,6 +164,53 @@ void SendKeyTap(int vk) {
     }
 }
 
+// ── 低级鼠标钩子 ────────────────────────────────────────────────
+// 这里曾经用 RegisterRawInputDevices(RIDEV_INPUTSINK) 收滚轮，那是个致命错误：
+// Raw Input 的注册是按 (usagePage, usage) 的，同一个进程里只能有一份。
+// 我们注册鼠标、关面板时又 RIDEV_REMOVE，等于把**游戏自己的鼠标注册**一起删了 ——
+// 游戏靠它读相对位移转视角，删掉之后视角就永远不能转了。
+//
+// WH_MOUSE_LL 是另一条通道，完全不碰 Raw Input 的注册表，安全。
+HHOOK g_hook = nullptr;
+bool g_want_wheel = false;
+bool g_want_phys = false;
+volatile LONG g_phys_left = 0;
+
+LRESULT CALLBACK MouseHookProc(int code, WPARAM wp, LPARAM lp) {
+    if (code == HC_ACTION) {
+        const MSLLHOOKSTRUCT* ms = reinterpret_cast<const MSLLHOOKSTRUCT*>(lp);
+        if (ms != nullptr) {
+            if (wp == WM_MOUSEWHEEL) {
+                if (g_want_wheel) {
+                    const short delta = (short)HIWORD(ms->mouseData);
+                    AddWheel((float)delta / (float)WHEEL_DELTA);
+                }
+            } else if ((ms->flags & LLMHF_INJECTED) == 0) {
+                if (wp == WM_LBUTTONDOWN) g_phys_left = 1;
+                else if (wp == WM_LBUTTONUP) g_phys_left = 0;
+            }
+        }
+    }
+    return CallNextHookEx(nullptr, code, wp, lp);
+}
+
+void UpdateHook() {
+    const bool need = g_want_wheel || g_want_phys;
+    if (need && g_hook == nullptr) {
+        g_hook = SetWindowsHookExW(WH_MOUSE_LL, MouseHookProc, GetModuleHandleW(nullptr), 0);
+        if (g_hook == nullptr) {
+            LogLine("[input] 装鼠标钩子失败 err=%lu", (unsigned long)GetLastError());
+        } else {
+            LogLine("[input] 鼠标钩子已挂上 wheel=%d phys=%d", g_want_wheel ? 1 : 0,
+                    g_want_phys ? 1 : 0);
+        }
+    } else if (!need && g_hook != nullptr) {
+        UnhookWindowsHookEx(g_hook);
+        g_hook = nullptr;
+        g_phys_left = 0;
+    }
+}
+
 bool IsCursorClipped() {
     RECT clip;
     if (!GetClipCursor(&clip)) return false;
@@ -173,6 +220,27 @@ bool IsCursorClipped() {
     int ch = (int)(clip.bottom - clip.top);
     return cw < sw - 2 || ch < sh - 2;
 }
+
+bool CursorVisible() {
+    CURSORINFO ci = {};
+    ci.cbSize = sizeof(ci);
+    if (!GetCursorInfo(&ci)) return true;   // 查不到就当可见，宁可多报
+    return (ci.flags & CURSOR_SHOWING) != 0;
+}
+
+void SetWheelWanted(bool on) {
+    if (g_want_wheel == on) return;
+    g_want_wheel = on;
+    UpdateHook();
+}
+
+void SetPhysicalWanted(bool on) {
+    if (g_want_phys == on) return;
+    g_want_phys = on;
+    UpdateHook();
+}
+
+bool PhysLeftDown() { return g_phys_left != 0; }
 
 }  // namespace input
 }  // namespace xiaoyu
