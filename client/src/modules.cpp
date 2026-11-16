@@ -205,7 +205,7 @@ void TickAutoClicker() {
 // 真实的 W，会和玩家自己的按键打架）。这里选按住 Ctrl，松 W 就松 Ctrl。
 void TickSprint() {
     const int fi = FindFeature(L"Sprint");
-    const bool want = Active(fi) && input::KeyDown(VK_W);
+    const bool want = Active(fi) && input::KeyDown((int)'W');
     if (want && !g_sprint_held) {
         HoldKey(VK_LCONTROL);
         g_sprint_held = true;
