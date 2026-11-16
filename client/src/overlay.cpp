@@ -90,13 +90,16 @@ void UpdateInputMode() {
     if (want == g_interactive) return;
     g_interactive = want;
 
-    LONG_PTR ex = GetWindowLongPtrW(g_overlay, GWLP_EXSTYLE);
+    // 注意：SDK 里没有 GWLP_EXSTYLE 这个常量。
+    // GWLP_* 那一套只覆盖指针大小的项（WNDPROC / HINSTANCE / HWNDPARENT /
+    // USERDATA / ID），style 和 exstyle 永远是 32 位的 GWL_*。
+    LONG ex = GetWindowLongW(g_overlay, GWL_EXSTYLE);
     if (want) {
-        ex &= ~(LONG_PTR)WS_EX_TRANSPARENT;
+        ex &= ~(LONG)WS_EX_TRANSPARENT;
     } else {
-        ex |= (LONG_PTR)WS_EX_TRANSPARENT;
+        ex |= (LONG)WS_EX_TRANSPARENT;
     }
-    SetWindowLongPtrW(g_overlay, GWLP_EXSTYLE, ex);
+    SetWindowLongW(g_overlay, GWL_EXSTYLE, ex);
 
     // 禁用的窗口不参与命中测试，这是最可靠的一条
     EnableWindow(g_overlay, want ? TRUE : FALSE);
@@ -334,10 +337,9 @@ DWORD WINAPI OverlayThread(LPVOID param) {
     // DirectComposition 要求线程先初始化 COM。
     // 用 STA：我们本来就在这个线程跑消息循环，公寓线程模型正合适。
     HRESULT co = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
-    bool co_ok = SUCCEEDED(co);
-    if (!co_ok && co != RPC_E_CHANGED_MODE) {
-        LogLine("[overlay] CoInitializeEx 失败 hr=0x%08lX（继续尝试）", (unsigned long)co);
-        co_ok = false;
+    if (FAILED(co) && co != RPC_E_CHANGED_MODE) {
+        // 已经按别的模型初始化过也能继续，只是记一笔
+        LogLine("[overlay] CoInitializeEx hr=0x%08lX（继续尝试）", (unsigned long)co);
     }
 
     int rc = OverlayMain();
