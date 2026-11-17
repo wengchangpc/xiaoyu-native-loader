@@ -113,6 +113,20 @@ float ParamDefault(int pi) {
 
 float ParamGet(int pi) { return cfg::ParamValue(pi, ParamDefault(pi)); }
 
+// 按属性名取某个模块的参数值。HUD 绘制要用（位置/缩放/颜色都在参数里），
+// 按下标取太脆 —— catalog 里参数顺序是原版 Python 的字典序。
+float FeatParam(int fi, const wchar_t* attr, float def) {
+    if (fi < 0) return def;
+    const FeatureInfo& f = kFeatures[fi];
+    for (int k = 0; k < f.paramCount; ++k) {
+        const int pi = f.paramFirst + k;
+        if (kParams[pi].attr != nullptr && wcscmp(kParams[pi].attr, attr) == 0) {
+            return ParamGet(pi);
+        }
+    }
+    return def;
+}
+
 // 一个模块行 + 展开后的参数行，一共多高
 float FeatureHeight(int fi) {
     float h = kRowH;
@@ -900,33 +914,13 @@ void DrawNotifications() {
     }
 }
 
-// 系统光标现在是否可见。游戏进入鼠标捕获模式时会 ShowCursor(FALSE)，
-// 那是它自己线程里的计数，我们从外面 ShowCursor(TRUE) 是改不动的，
-// 所以只能自己判断、自己补一个指针。
-bool SystemCursorVisible() {
-    CURSORINFO ci = {};
-    ci.cbSize = sizeof(ci);
-    if (!GetCursorInfo(&ci)) return true;   // 查不到就当可见，少画比多画安全
-    return (ci.flags & CURSOR_SHOWING) != 0;
-}
-
-// 画一个系统风格的箭头指针：先铺一层放大的深色轮廓，再填白色本体。
-void DrawSoftwareCursor(float x, float y) {
-    static const float kPts[7][2] = {
-        {0.0f, 0.0f},   {0.0f, 16.0f},  {4.2f, 12.4f}, {6.9f, 17.9f},
-        {9.7f, 16.5f},  {7.1f, 11.1f},  {12.6f, 11.1f}};
-    const float k = 1.15f;
-    D2D1_POINT_2F rim[7];
-    D2D1_POINT_2F body[7];
-    for (int i = 0; i < 7; ++i) {
-        body[i].x = x + kPts[i][0] * k;
-        body[i].y = y + kPts[i][1] * k;
-        rim[i].x = x + kPts[i][0] * k * 1.14f - 0.6f;
-        rim[i].y = y + kPts[i][1] * k * 1.14f - 0.6f;
-    }
-    render::Polygon(rim, 7, render::RgbaF(0.0f, 0.0f, 0.0f, 0.72f));
-    render::Polygon(body, 7, render::RgbaF(1.0f, 1.0f, 1.0f, 0.96f));
-}
+// 面板里的鼠标指针一律用系统光标，不自绘。
+//
+// 这里原来有一个 DrawSoftwareCursor()，会画一个箭头形状的多边形。它带来两个问题：
+//   1) 系统光标可见时会和它叠成"两个光标一起动"；
+//   2) 形状和大小跟真实光标不一致，点起来总觉得对不上。
+// 现在改成：面板打开时由覆盖层把系统光标"推"成可见（见 overlay.cpp 的
+// SetSystemCursor），面板里直接使用真实光标。这样位置天然一致、手感也一致。
 
 void DrawHud() {
     const float s = g_s;
@@ -972,34 +966,73 @@ void DrawHud() {
         }
     }
 
-    // Keystrokes：左下角 WASD + 鼠标
+    // Keystrokes：按键显示。位置/缩放/颜色都读模块自己的参数（原版就是这么做的），
+    // 之前固定画在左下角，滑块怎么拖都不动，等于参数白给。
     int ks_idx = FindFeatureByName(L"Keystrokes");
     if (ks_idx >= 0 && cfg::ModuleOn(ks_idx)) {
-        float box = 18.0f * s;
-        float gap = 2.0f * s;
-        float bx = 10.0f * s;
-        float by = (float)render::Height() - 3.0f * (box + gap) - 10.0f * s;
+        float ksc = FeatParam(ks_idx, L"scale", 1.0f);
+        if (ksc < 0.4f) ksc = 0.4f;
+        if (ksc > 2.5f) ksc = 2.5f;
+        float alpha = FeatParam(ks_idx, L"alpha", 1.0f);
+        if (alpha < 0.1f) alpha = 0.1f;
+        if (alpha > 1.0f) alpha = 1.0f;
+        const float cr = FeatParam(ks_idx, L"color_r", 1.0f);
+        const float cg = FeatParam(ks_idx, L"color_g", 1.0f);
+        const float cb = FeatParam(ks_idx, L"color_b", 1.0f);
 
-        struct KeyBox { const wchar_t* label; int vk; float dx, dy; float w, h; };
-        KeyBox boxes[] = {
-            {L"W", 'W', 1.0f, 0.0f, 1.0f, 1.0f},
-            {L"A", 'A', 0.0f, 1.0f, 1.0f, 1.0f},
-            {L"S", 'S', 1.0f, 1.0f, 1.0f, 1.0f},
-            {L"D", 'D', 2.0f, 1.0f, 1.0f, 1.0f},
-            {L"\u5DE6\u952E", VK_LBUTTON, 0.0f, 2.0f, 1.5f, 1.0f},
-            {L"\u53F3\u952E", VK_RBUTTON, 1.5f, 2.0f, 1.5f, 1.0f},
+        const float box = 16.0f * s * ksc;
+        const float gap = 2.0f * s * ksc;
+        const float unit = box + gap;
+        const float pad = 4.0f * s;
+        const int rows = 5;
+        const float totalW = 3.0f * box + 2.0f * gap;
+        const float totalH = (float)rows * box + (float)(rows - 1) * gap;
+
+        const float viewW2 = (float)render::Width();
+        const float viewH2 = (float)render::Height();
+        float bx = FeatParam(ks_idx, L"posx", 0.25f) * viewW2;
+        float by = FeatParam(ks_idx, L"posy", 0.75f) * viewH2;
+        // 钳在屏幕里：用户把位置拖到边上时别让按键块跑出去
+        if (bx > viewW2 - totalW - pad) bx = viewW2 - totalW - pad;
+        if (by > viewH2 - totalH - pad) by = viewH2 - totalH - pad;
+        if (bx < pad) bx = pad;
+        if (by < pad) by = pad;
+
+        if (FeatParam(ks_idx, L"bg", 0.0f) > 0.5f) {
+            float ba = FeatParam(ks_idx, L"bg_alpha", 0.35f);
+            if (ba < 0.0f) ba = 0.0f;
+            if (ba > 1.0f) ba = 1.0f;
+            render::RoundRect(bx - pad, by - pad, totalW + pad * 2.0f, totalH + pad * 2.0f,
+                              5.0f * s, render::RgbaF(0.0f, 0.0f, 0.0f, ba * alpha));
+        }
+
+        const D2D1_COLOR_F idle = render::RgbaF(1.0f, 1.0f, 1.0f, 0.10f * alpha);
+        const D2D1_COLOR_F hot = render::RgbaF(cr, cg, cb, 0.90f * alpha);
+        const D2D1_COLOR_F idle_txt = render::RgbaF(1.0f, 1.0f, 1.0f, 0.72f * alpha);
+
+        // dx/dy 是"第几列/第几行"，w 是宽度占几列
+        struct KeyBox { const wchar_t* label; int vk; float dx, dy, w; };
+        const KeyBox boxes[] = {
+            {L"W", 'W', 1.0f, 0.0f, 1.0f},
+            {L"A", 'A', 0.0f, 1.0f, 1.0f},
+            {L"S", 'S', 1.0f, 1.0f, 1.0f},
+            {L"D", 'D', 2.0f, 1.0f, 1.0f},
+            {L"\u5DE6\u952E", VK_LBUTTON, 0.0f, 2.0f, 1.5f},
+            {L"\u53F3\u952E", VK_RBUTTON, 1.5f, 2.0f, 1.5f},
+            {L"Space", VK_SPACE, 0.0f, 3.0f, 3.0f},
+            {L"Shift", VK_LSHIFT, 0.0f, 4.0f, 1.5f},
+            {L"Ctrl", VK_LCONTROL, 1.5f, 4.0f, 1.5f},
         };
         for (size_t i = 0; i < sizeof(boxes) / sizeof(boxes[0]); ++i) {
             bool down = input::KeyDown(boxes[i].vk) ||
                         (boxes[i].vk == VK_LBUTTON && input::Down(0)) ||
                         (boxes[i].vk == VK_RBUTTON && input::Down(1));
-            float x = bx + boxes[i].dx * (box + gap);
-            float yy = by + boxes[i].dy * (box + gap);
+            float x = bx + boxes[i].dx * unit;
+            float yy = by + boxes[i].dy * unit;
             float w = boxes[i].w * box + (boxes[i].w - 1.0f) * gap;
-            render::RoundRect(x, yy, w, box, 3.0f * s,
-                              down ? theme::kAccent : theme::kRow);
-            render::Text(boxes[i].label, x, yy, w, box, 9.0f * s,
-                         down ? theme::kHeadBg : theme::kOff, ALIGN_CENTER, false);
+            render::RoundRect(x, yy, w, box, 3.0f * s, down ? hot : idle);
+            render::Text(boxes[i].label, x, yy, w, box, 9.0f * s * ksc,
+                         down ? theme::kHeadBg : idle_txt, ALIGN_CENTER, false);
         }
     }
 
@@ -1158,13 +1191,7 @@ void OnFrame() {
             DrawPanel(g_panels[i], false);
         }
 
-        // 只在"系统光标真的看不见"时补一个自己的指针。
-        // 面板打开期间我们只是接管了游戏的 Raw Input，Windows 仍在正常
-        // 移动系统光标，GetCursorPos 是准的 —— 这时候再画一个就会出现
-        // "两个光标一起动"。唯一需要自绘的情况是游戏把全局光标藏了。
-        if (!SystemCursorVisible()) {
-            DrawSoftwareCursor(input::X(), input::Y());
-        }
+        // 不画任何指针：面板里直接用系统光标（由 overlay.cpp 保证可见）。
     }
 
     DrawHud();

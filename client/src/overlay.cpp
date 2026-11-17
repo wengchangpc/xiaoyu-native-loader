@@ -293,6 +293,46 @@ void UpdateCursorClip(bool want) {
     g_clip_on = true;
 }
 
+// 面板打开期间让**系统光标**保持可见（用户要求只用真实光标，不自绘）。
+//
+// 游戏在鼠标捕获状态下调过 ShowCursor(FALSE)，那是**进程级**的显示计数，
+// 而我们这个 DLL 就注入在同一个进程里，共用同一个计数 —— 所以不是"改不动"，
+// 而是只能推一下再按同样次数拉回来。关键是要精确记账：
+// 推了几次就回退几次，绝不多推，否则游戏自己那一次 ShowCursor 就再也对不平。
+//
+// 以前这里写成 while (ShowCursor(...) < 0) 无限推，两头都推，计数彻底乱掉。
+// 现在 g_show_pushed 记着推了多少次，关面板时一次不多一次不少地退回去。
+bool g_cursor_forced = false;
+int g_show_pushed = 0;
+const int kMaxCursorPush = 6;    // 上限：万一被别的东西反复隐藏，也别把计数推上天
+
+void SetSystemCursor(bool want) {
+    if (!want) {
+        if (!g_cursor_forced) return;
+        g_cursor_forced = false;
+        for (int i = 0; i < g_show_pushed; ++i) ShowCursor(FALSE);
+        if (g_show_pushed > 0) {
+            LogLine("[overlay] 系统光标计数已还原（回退 %d 次）", g_show_pushed);
+        }
+        g_show_pushed = 0;
+        return;
+    }
+    if (g_show_pushed >= kMaxCursorPush) return;
+    // 每轮都检查：游戏可能因为收到鼠标事件又把光标藏回去，这里补推一次
+    int n = 0;
+    while (!input::CursorVisible() && g_show_pushed < kMaxCursorPush) {
+        ShowCursor(TRUE);
+        ++g_show_pushed;
+        ++n;
+    }
+    if (!g_cursor_forced) {
+        g_cursor_forced = true;
+        LogLine("[overlay] 面板打开，系统光标置为可见（推了 %d 次）", g_show_pushed);
+    } else if (n > 0) {
+        LogLine("[overlay] 游戏把光标藏回去了，补推 %d 次", n);
+    }
+}
+
 // 面板可见性变化时切换命中测试模式
 void UpdateInputMode() {
     if (g_overlay == nullptr) return;
@@ -415,6 +455,15 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_MOUSEWHEEL:
             input::AddWheel((float)GET_WHEEL_DELTA_WPARAM(wp) / (float)WHEEL_DELTA);
             return 0;
+
+        case WM_SETCURSOR:
+            // 面板打开时这块区域归我们，指针形状也得我们说了算。
+            // 不处理的话会沿用上一个设过光标的窗口留下的形状，有时干脆是空的。
+            if (g_interactive && LOWORD(lp) == HTCLIENT) {
+                SetCursor(LoadCursorW(nullptr, IDC_ARROW));
+                return TRUE;
+            }
+            break;
 
         case WM_INPUT: {
             // 面板打开期间鼠标注册在我们身上，位移和滚轮都从这里来
@@ -561,6 +610,8 @@ int OverlayMain() {
         // 绝对不要挪进下面 if (g_visible) 里面 —— 游戏一进后台那个分支
         // 就不执行了，ClipCursor 会一直残留，用户整个桌面的光标都被困住。
         UpdateCursorClip(g_visible && gui::Visible());
+        // 系统光标同理：只有面板开着才需要它可见，其余情况把显示计数还回去
+        SetSystemCursor(g_visible && gui::Visible());
 
         if (g_visible) {
             // 注意：不要在这里调 input::NewFrame()。
@@ -665,6 +716,8 @@ int OverlayMain() {
     UpdateCursorClip(false);
     ClipCursor(nullptr);          // 双保险：确认桌面级剪裁一定被清掉
     g_clip_on = false;
+    // 光标显示计数也必须还原，否则游戏里会永远多出一个光标的额度
+    SetSystemCursor(false);
     HookMouseToOverlay(false);
     // 停掉钩子线程并摘钩。留着不管的话，DLL 一旦被卸载，
     // 系统回调到已释放的代码段就是直接崩进程。

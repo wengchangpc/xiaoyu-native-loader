@@ -219,6 +219,7 @@ HHOOK g_hook = nullptr;
 volatile LONG g_want_wheel = 0;
 volatile LONG g_want_phys = 0;
 volatile LONG g_phys_left = 0;
+volatile LONG g_phys_right = 0;
 
 HHOOK g_kb_hook = nullptr;
 volatile LONG g_want_phys_key = 0;
@@ -254,6 +255,8 @@ LRESULT CALLBACK MouseHookProc(int code, WPARAM wp, LPARAM lp) {
             } else if ((ms->flags & LLMHF_INJECTED) == 0) {
                 if (wp == WM_LBUTTONDOWN) g_phys_left = 1;
                 else if (wp == WM_LBUTTONUP) g_phys_left = 0;
+                else if (wp == WM_RBUTTONDOWN) g_phys_right = 1;
+                else if (wp == WM_RBUTTONUP) g_phys_right = 0;
             }
         }
     }
@@ -297,6 +300,7 @@ void ApplyHookState() {
         UnhookWindowsHookEx(g_hook);
         g_hook = nullptr;
         g_phys_left = 0;
+        g_phys_right = 0;
     }
 
     // 键盘钩子
@@ -337,6 +341,7 @@ DWORD WINAPI HookThreadProc(LPVOID param) {
     if (g_hook != nullptr) { UnhookWindowsHookEx(g_hook); g_hook = nullptr; }
     if (g_kb_hook != nullptr) { UnhookWindowsHookEx(g_kb_hook); g_kb_hook = nullptr; }
     g_phys_left = 0;
+    g_phys_right = 0;
     g_phys_space = 0;
     g_hook_tid = 0;
     return 0;
@@ -398,6 +403,8 @@ void SetPhysicalKeyWanted(bool on) {
 }
 
 bool PhysLeftDown() { return g_phys_left != 0; }
+
+bool PhysRightDown() { return g_phys_right != 0; }
 
 bool PhysSpaceDown() { return g_phys_space != 0; }
 

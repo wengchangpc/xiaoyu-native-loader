@@ -139,6 +139,29 @@ void SendKeyUpDown(WORD vk) {
     SendInput(2, in, sizeof(INPUT));
 }
 
+// 鼠标键的成对注入，语义和 SendKeyUpDown 一样：让游戏以为是"又点了一下"。
+void SendMouseUpDown(DWORD up_flag, DWORD down_flag) {
+    INPUT in[2] = {};
+    in[0].type = INPUT_MOUSE;
+    in[0].mi.dwFlags = up_flag;
+    in[1].type = INPUT_MOUSE;
+    in[1].mi.dwFlags = down_flag;
+    SendInput(2, in, sizeof(INPUT));
+}
+
+// 连发间隔加抖动。
+// 固定 50ms 一发的节奏在服务端看是完美的等距脉冲，等于自己报"我是脚本"。
+// 反作弊优先，所以所有连发类动作都走这里：基准 ±15% 的随机。
+ULONGLONG JitterMs(int base_ms, int percent) {
+    if (base_ms <= 0) return 0;
+    const int span = base_ms * percent / 100;
+    if (span <= 0) return (ULONGLONG)base_ms;
+    const int d = (rand() % (span * 2 + 1)) - span;
+    int v = base_ms + d;
+    if (v < 1) v = 1;
+    return (ULONGLONG)v;
+}
+
 // 逐字符按 Unicode 注入。中文没法用虚拟键码表示，只能走 KEYEVENTF_UNICODE，
 // 让系统在目标线程里合成 WM_CHAR。基岩版的聊天输入框吃的是 WM_CHAR，
 // 所以这条路能打出中文（用 VkKeyScan 走键盘布局就会被转成问号）。
@@ -165,6 +188,9 @@ int g_fish_phase = 0;   // 0=还没抛竿 1=等鱼 2=收杆后冷却
 
 // NoJumpDelay
 ULONGLONG g_jump_next = 0;
+
+// NoThrowDelay
+ULONGLONG g_throw_next = 0;
 
 // Spammer：0=等下一轮 1=已按 T 等聊天框 2=已打字等回车
 ULONGLONG g_spam_next = 0;
@@ -336,8 +362,26 @@ void TickJumpSpam() {
     const ULONGLONG now = GetTickCount64();
     if (g_jump_next == 0) g_jump_next = now;
     if (now < g_jump_next) return;
-    g_jump_next = now + 50;   // 20Hz，和原版 on_tick 同频
+    g_jump_next = now + JitterMs(50, 15);   // 20Hz 基准，带抖动
     SendKeyUpDown(VK_SPACE);
+}
+
+// NoThrowDelay（无投掷延迟）：对齐原版 world/nothrowdelay.py 的意图 ——
+// 去掉连续投掷（珍珠/雪球/鸡蛋）之间的冷却。
+// 原版是改引擎里的 use 冷却，我们只能逐个"再按一次右键"把冷却顶掉：
+// 玩家按住右键期间，按 20Hz 把右键拆成「松开 + 按下」重新发一遍。
+// 判"物理上按着右键"同样走 WH_MOUSE_LL，理由和 AC 判左键一样。
+void TickNoThrowDelay() {
+    const int fi = FindFeature(L"NoThrowDelay");
+    if (!Active(fi) || !input::PhysRightDown()) {
+        g_throw_next = 0;
+        return;
+    }
+    const ULONGLONG now = GetTickCount64();
+    if (g_throw_next == 0) g_throw_next = now;
+    if (now < g_throw_next) return;
+    g_throw_next = now + JitterMs(50, 15);
+    SendMouseUpDown(MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_RIGHTDOWN);
 }
 
 // Spammer：对齐原版 misc/spammer.py —— 每 delay 秒发一条「文本 + 随机后缀」。
@@ -491,7 +535,7 @@ bool Implemented(const wchar_t* english_name) {
     // 靠输入合成实现的
     static const wchar_t* kSynth[] = {
         L"AC", L"Sprint", L"AntiAFK", L"AutoFish",
-        L"NoJumpDelay", L"Spammer", L"Spin", L"AttackSprintReset",
+        L"NoJumpDelay", L"NoThrowDelay", L"Spammer", L"Spin", L"AttackSprintReset",
     };
     for (size_t i = 0; i < sizeof(kSynth) / sizeof(kSynth[0]); ++i) {
         if (wcscmp(kSynth[i], english_name) == 0) return true;
@@ -511,6 +555,7 @@ void ReleaseAll() {
     g_fish_next = 0;
     g_afk_walking = false;
     g_jump_next = 0;
+    g_throw_next = 0;
     g_spam_phase = 0;
     g_spam_next = 0;
     g_spin_next = 0;
@@ -535,8 +580,10 @@ void Tick() {
     {
         const int ac = FindFeature(L"AC");
         const int asr = FindFeature(L"AttackSprintReset");
+        const int ntd = FindFeature(L"NoThrowDelay");
         const bool need_mouse = (ac >= 0 && cfg::ModuleOn(ac)) ||
-                                (asr >= 0 && cfg::ModuleOn(asr));
+                                (asr >= 0 && cfg::ModuleOn(asr)) ||
+                                (ntd >= 0 && cfg::ModuleOn(ntd));
         input::SetPhysicalWanted(need_mouse);
     }
     {
@@ -550,6 +597,7 @@ void Tick() {
     TickAntiAfkRelease();
     TickAutoFish();
     TickJumpSpam();
+    TickNoThrowDelay();
     TickSpammer();
     TickSpin();
 }

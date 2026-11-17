@@ -76,6 +76,9 @@ void ShutdownHooks();
 
 // 物理（非注入）左键是否按下
 bool PhysLeftDown();
+// 物理（非注入）右键是否按下。NoThrowDelay 要用它判断"玩家还按着右键吗"，
+// 同样不能看 GetAsyncKeyState —— 我们成对注入的 UP/DOWN 会把它写脏。
+bool PhysRightDown();
 
 // 物理（非注入）空格是否按下。
 // 跳跃类模块要成对注入 SPACE 的 UP/DOWN 来"顶跳"，注入的 DOWN 会把
