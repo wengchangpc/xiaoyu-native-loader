@@ -18,7 +18,12 @@ namespace xiaoyu {
 namespace cfg {
 namespace {
 
-const wchar_t* kPath = L"C:\\Xiaoyu\\native_config.txt";
+const wchar_t* kPathDefault = L"C:\\Xiaoyu\\native_config.txt";
+
+// 当前生效的配置文件路径。原来是编译期常量，加配置档之后必须是可变的：
+// 切档 = 保存旧路径 → 重置成默认值 → 从新路径读。
+wchar_t g_path[MAX_PATH] = L"C:\\Xiaoyu\\native_config.txt";
+int g_profile = 0;
 
 std::vector<char> g_on;
 std::vector<int> g_bind;
@@ -113,9 +118,9 @@ void Load() {
     EnsureArrays();
     BuildIndex();
 
-    FILE* f = _wfopen(kPath, L"r, ccs=UTF-8");
+    FILE* f = _wfopen(g_path, L"r, ccs=UTF-8");
     if (f == nullptr) {
-        LogLine("[cfg] no config yet (%ls)", kPath);
+        LogLine("[cfg] no config yet (%ls)", g_path);
         return;
     }
 
@@ -234,9 +239,9 @@ void Load() {
 void Save() {
     EnsureArrays();
 
-    FILE* f = _wfopen(kPath, L"w, ccs=UTF-8");
+    FILE* f = _wfopen(g_path, L"w, ccs=UTF-8");
     if (f == nullptr) {
-        LogLine("[cfg] Save failed: cannot open %ls", kPath);
+        LogLine("[cfg] Save failed: cannot open %ls", g_path);
         return;
     }
 
@@ -362,6 +367,11 @@ void SetPanelPos(int group, float x, float y, bool collapsed) {
     MarkDirty();
 }
 
+bool ParamIsSet(int index) {
+    if (index < 0 || index >= (int)g_has.size()) return false;
+    return g_has[index] != 0;
+}
+
 bool HudEnabled(int feature_index) { return ModuleOn(feature_index); }
 
 void SetHudEnabled(int feature_index, bool on) { SetModuleOn(feature_index, on); }
@@ -391,6 +401,62 @@ void SetUnlockKey(int vk) {
         g_unlock_key = vk;
         MarkDirty();
     }
+}
+
+// ── 配置档 ──────────────────────────────────────────────────────
+
+namespace {
+
+void ProfilePath(int slot, wchar_t* out, size_t cap) {
+    if (slot <= 0) {
+        wcsncpy_s(out, cap, kPathDefault, _TRUNCATE);
+        return;
+    }
+    swprintf_s(out, cap, L"C:\\Xiaoyu\\native_config_%d.txt", slot);
+}
+
+// 切档前必须把内存状态清回默认值。
+// 只做"读新文件"是不够的：新档文件可能还不存在，Load() 会直接返回，
+// 上一个档的开关/参数就全留在内存里，看起来像"切了档但没变"。
+void ResetDefaults() {
+    EnsureArrays();
+    g_on.assign(kFeatureCount, 0);
+    g_bind.assign(kFeatureCount, 0);
+    g_val.assign(kParamCount, 0.0f);
+    g_has.assign(kParamCount, 0);
+    for (int i = 0; i < GROUP_COUNT; ++i) {
+        g_panels[i].has = false;
+        g_panels[i].x = 0.0f;
+        g_panels[i].y = 0.0f;
+        g_panels[i].collapsed = false;
+    }
+    g_scale = 0.0f;          // 自动
+    g_chinese = true;
+    g_block_input = true;
+    g_auto_unlock = false;
+    g_take_focus = false;
+    g_unlock_key = 0xA4;     // VK_LMENU
+    g_dirty = false;
+    g_last_change = 0;
+}
+
+}  // namespace
+
+int CurrentProfile() { return g_profile; }
+
+void SwitchProfile(int slot) {
+    if (slot < 0) slot = 0;
+    if (slot > 3) slot = 3;
+    if (slot == g_profile) return;
+
+    // 先把当前档的改动落盘，否则切走就全丢了
+    Save();
+    const int from = g_profile;
+    ResetDefaults();
+    ProfilePath(slot, g_path, MAX_PATH);
+    g_profile = slot;
+    Load();
+    LogLine("[cfg] 配置档 %d -> %d（%ls）", from, slot, g_path);
 }
 
 }  // namespace cfg

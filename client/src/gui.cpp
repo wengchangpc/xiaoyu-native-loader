@@ -42,6 +42,9 @@ const float kRadius = 6.0f;
 const float kShadow = 5.0f;
 const float kParamH = 18.0f;
 const float kScrollbarW = 2.0f;
+// 顶部工具条（搜索框 + 配置档按钮）的尺寸，单位同为 GUI 单位
+const float kToolH = 22.0f;
+const float kSearchW = 150.0f;
 
 struct Panel {
     int group = 0;
@@ -100,31 +103,197 @@ const wchar_t* GroupName(int g) {
     return cfg::Chinese() ? kGroups[g].zh : kGroups[g].en;
 }
 
+// ★ catalog 里 PK_SLIDER 的第三个浮点数（struct 里叫 vstep）不是步长，
+// 是生成器从 ClickGui.py 原样搬过来的第 5 个字段：
+//     ('X 位置', 'posx', 0.0, 1.0, 0.471)
+// 而 0.471 正好等于 FPS.posx 的出厂值 0.471041713 —— 原版写这个数就是为了
+// 让滑块落在模块真实的默认位置上。把它当步长用会同时坏两件事：
+//   1) 没调过的滑块显示**量程中点**（posx 变 0.5、颜色变灰），不是原版位置；
+//   2) 滑块一跳一大格 —— posx 每格 0.471，等于只剩 0 / 0.471 / 0.942 三档。
+// 原版自己也不是拿它当步长的：ClickGui._getDisplayStep() 会按量程重算
+// （span<=10 → 0.01），所以这里同样改成"当默认值 + 步长按量程现算"。
+//
+// 注意这个只影响面板里滑块的显示值。模块实际读参数走 modules.cpp 的
+// ParamOf()，那边每个调用点都自带出厂常量，不受这里影响；
+// HUD 要精确对齐原版默认值则用下面的 FeatParamUser()。
+float ClampToRange(const ParamInfo& p, float v) {
+    if (v < p.vmin) v = p.vmin;
+    if (v > p.vmax) v = p.vmax;
+    return v;
+}
+
 float ParamDefault(int pi) {
     const ParamInfo& p = kParams[pi];
     if (p.kind != PK_SLIDER) return 0.0f;
-    float mid = (p.vmin + p.vmax) * 0.5f;
-    if (p.vstep > 0.0f) {
-        float steps = floorf((mid - p.vmin) / p.vstep + 0.5f);
-        mid = p.vmin + steps * p.vstep;
+    return ClampToRange(p, p.vstep);
+}
+
+// 拖动/显示用的步长。按量程分档就够了，反正原版也没给真步长。
+float ParamStep(int pi) {
+    const ParamInfo& p = kParams[pi];
+    const float range = p.vmax - p.vmin;
+    if (range <= 0.0f) return 0.0f;
+    if (range <= 1.0f) return 0.01f;
+    if (range <= 4.0f) return 0.05f;
+    if (range <= 40.0f) return 0.5f;
+    return 1.0f;
+}
+
+float SnapParam(int pi, float v) {
+    const ParamInfo& p = kParams[pi];
+    const float step = ParamStep(pi);
+    if (step > 0.0f) {
+        v = p.vmin + floorf((v - p.vmin) / step + 0.5f) * step;
     }
-    return mid;
+    return ClampToRange(p, v);
 }
 
 float ParamGet(int pi) { return cfg::ParamValue(pi, ParamDefault(pi)); }
 
-// 按属性名取某个模块的参数值。HUD 绘制要用（位置/缩放/颜色都在参数里），
-// 按下标取太脆 —— catalog 里参数顺序是原版 Python 的字典序。
-float FeatParam(int fi, const wchar_t* attr, float def) {
-    if (fi < 0) return def;
+// 按属性名找参数下标，找不到返回 -1。
+int FeatParamIndex(int fi, const wchar_t* attr) {
+    if (fi < 0) return -1;
     const FeatureInfo& f = kFeatures[fi];
     for (int k = 0; k < f.paramCount; ++k) {
         const int pi = f.paramFirst + k;
         if (kParams[pi].attr != nullptr && wcscmp(kParams[pi].attr, attr) == 0) {
-            return ParamGet(pi);
+            return pi;
         }
     }
-    return def;
+    return -1;
+}
+
+// 按属性名取某个模块的参数值。HUD 绘制要用（位置/缩放/颜色都在参数里），
+// 按下标取太脆 —— catalog 里参数顺序是原版 Python 的字典序。
+float FeatParam(int fi, const wchar_t* attr, float def) {
+    const int pi = FeatParamIndex(fi, attr);
+    if (pi < 0) return def;
+    return ParamGet(pi);
+}
+
+// 只在"玩家真的调过"时才用参数值，否则用调用方给的出厂默认。
+//
+// 为什么不直接 ParamGet：catalog 里的 vmin/vmax 是**滑块量程**，
+// ParamDefault 取的是量程中点 —— posx 会变成 0.5（HUD 跑到屏幕正中）、
+// color_r/g/b 会变成 0.5（青色强调色变成灰）。量程中点不等于原版默认值。
+// 原版 Python 里这些字段都是写死的（FPS posx=0.4711、CPS posy=0.9475……），
+// 没调过时必须回退到那些数值，HUD 才会停在原来的位置。
+float FeatParamUser(int fi, const wchar_t* attr, float def) {
+    const int pi = FeatParamIndex(fi, attr);
+    if (pi < 0) return def;
+    if (!cfg::ParamIsSet(pi)) return def;
+    return cfg::ParamValue(pi, def);
+}
+
+// HUD 元素的通用外观。原版每个 HUD 模块都带这一组配置项
+// （posx/posy/scale/alpha/bg/bg_alpha/color_r/g/b），面板里也给了滑块，
+// 之前渲染端坐标全写死，滑块等于白给。
+struct HudLook {
+    float x, y;  // 左上角像素坐标（ArrayList 的 x 是右边缘，那边单独处理）
+    float scale;
+    float alpha;
+    float r, g, b;
+    bool bg;
+    float bg_alpha;
+};
+
+HudLook ReadHudLook(int fi, float defx, float defy, float defscale,
+                    const D2D1_COLOR_F& defcol) {
+    HudLook L;
+    L.scale = FeatParamUser(fi, L"scale", defscale);
+    if (L.scale < 0.3f) L.scale = 0.3f;
+    if (L.scale > 4.0f) L.scale = 4.0f;
+    L.alpha = FeatParamUser(fi, L"alpha", 1.0f);
+    if (L.alpha < 0.05f) L.alpha = 0.05f;
+    if (L.alpha > 1.0f) L.alpha = 1.0f;
+    L.x = FeatParamUser(fi, L"posx", defx) * (float)render::Width();
+    L.y = FeatParamUser(fi, L"posy", defy) * (float)render::Height();
+    L.r = FeatParamUser(fi, L"color_r", defcol.r);
+    L.g = FeatParamUser(fi, L"color_g", defcol.g);
+    L.b = FeatParamUser(fi, L"color_b", defcol.b);
+    L.bg = FeatParamUser(fi, L"bg", 0.0f) > 0.5f;
+    L.bg_alpha = FeatParamUser(fi, L"bg_alpha", 0.35f);
+    if (L.bg_alpha < 0.0f) L.bg_alpha = 0.0f;
+    if (L.bg_alpha > 1.0f) L.bg_alpha = 1.0f;
+    return L;
+}
+
+// 把一块 HUD 钳在屏幕内：posx 拖到 1.0 时不至于整块跑到屏幕外找不回来。
+void ClampHudBox(float* x, float* y, float w, float h) {
+    const float vw = (float)render::Width();
+    const float vh = (float)render::Height();
+    if (*x + w > vw) *x = vw - w;
+    if (*y + h > vh) *y = vh - h;
+    if (*x < 0.0f) *x = 0.0f;
+    if (*y < 0.0f) *y = 0.0f;
+}
+
+// 紧凑 HSV→RGB（s=0.55, v=1），ArrayList 的 rgb 色彩模式用。
+// 不用 D2D 的色相工具是因为这里只要一个纯函数，逐行算色相即可。
+D2D1_COLOR_F HueColor(float hue, float alpha) {
+    hue = hue - floorf(hue);
+    const float h6 = hue * 6.0f;
+    const int i = (int)h6;
+    const float f = h6 - (float)i;
+    const float s = 0.55f;
+    const float v = 1.0f;
+    const float p = v * (1.0f - s);
+    const float q = v * (1.0f - s * f);
+    const float t = v * (1.0f - s * (1.0f - f));
+    switch (i % 6) {
+        case 0: return render::RgbaF(v, t, p, alpha);
+        case 1: return render::RgbaF(q, v, p, alpha);
+        case 2: return render::RgbaF(p, v, t, alpha);
+        case 3: return render::RgbaF(p, q, v, alpha);
+        case 4: return render::RgbaF(t, p, v, alpha);
+        default: return render::RgbaF(v, p, q, alpha);
+    }
+}
+
+// ── 搜索过滤 ────────────────────────────────────────────────────
+// 116 个模块分 7 栏，找东西全靠滚。这里给个输入框做子串过滤。
+// 匹配英文名（原版模块标识就是英文，日志里也是英文，用户能对上）+
+// 中文名（原样子串，万一输入法能用）。大小写不敏感。
+wchar_t g_search[32] = {0};
+int g_search_len = 0;
+bool g_search_focus = false;
+
+// 单击的一次性锁：工具栏先处理，面板再看到同一次按下时就不能重复响应，
+// 否则点搜索框会顺手把底下那一行的模块开关也切了。
+bool g_click_used = false;
+
+wchar_t UpperAscii(wchar_t c) {
+    return (c >= L'a' && c <= L'z') ? (wchar_t)(c - L'a' + L'A') : c;
+}
+
+bool ContainsCI(const wchar_t* hay, const wchar_t* needle) {
+    if (hay == nullptr || needle == nullptr || needle[0] == 0) return true;
+    const size_t n = wcslen(needle);
+    for (const wchar_t* p = hay; *p != 0; ++p) {
+        size_t i = 0;
+        while (i < n && p[i] != 0 && UpperAscii(p[i]) == UpperAscii(needle[i])) ++i;
+        if (i == n) return true;
+    }
+    return false;
+}
+
+bool FeatMatch(int i) {
+    if (g_search_len == 0) return true;
+    if (ContainsCI(kFeatures[i].en, g_search)) return true;
+    const wchar_t* zh = kFeatures[i].zh;
+    return zh != nullptr && wcsstr(zh, g_search) != nullptr;
+}
+
+void SearchAppend(wchar_t c) {
+    const int cap = (int)(sizeof(g_search) / sizeof(g_search[0])) - 1;
+    if (g_search_len >= cap) return;
+    g_search[g_search_len++] = c;
+    g_search[g_search_len] = 0;
+}
+
+void SearchBackspace() {
+    if (g_search_len <= 0) return;
+    g_search[--g_search_len] = 0;
 }
 
 // 一个模块行 + 展开后的参数行，一共多高
@@ -140,6 +309,7 @@ float GroupContentHeight(int gi) {
     float h = 0.0f;
     for (int i = 0; i < kFeatureCount; ++i) {
         if (kFeatures[i].group != gi) continue;
+        if (!FeatMatch(i)) continue;
         h += FeatureHeight(i);
     }
     return h;
@@ -211,7 +381,9 @@ void RebuildGroupWidths() {
 int CountGroupFeatures(int gi) {
     int n = 0;
     for (int i = 0; i < kFeatureCount; ++i) {
-        if (kFeatures[i].group == gi) ++n;
+        if (kFeatures[i].group != gi) continue;
+        if (!FeatMatch(i)) continue;
+        ++n;
     }
     return n;
 }
@@ -260,8 +432,10 @@ void LayoutPanels() {
 
     // 单栏内容上限 52% 的高度，整体（含多行）只用可用高度的 82% ——
     // 这样打开面板时四周一定留有游戏的画面，不会看起来像全屏菜单。
+    // 顶部要给工具条（搜索框 + 配置档）留出位置，否则居中之后会压在它上面
+    const float tool_h = (kToolH + kGap) * g_s;
     float limit_body = viewH * 0.52f;
-    float availH = (viewH - pad * 2.0f) * 0.82f - gap * (row_count - 1);
+    float availH = (viewH - pad * 2.0f - tool_h) * 0.82f - gap * (row_count - 1);
     float budget = (availH - row_count * (headH + 6.0f * g_s)) / (float)row_count;
     float max_body = limit_body < budget ? limit_body : budget;
     if (max_body < 0.0f) max_body = 0.0f;
@@ -319,7 +493,7 @@ void LayoutPanels() {
     }
     float total_h = y - gap + pad;
     float offset_y = (viewH - total_h) * 0.5f;
-    if (offset_y < 0.0f) offset_y = 0.0f;
+    if (offset_y < tool_h) offset_y = tool_h;
 
     // 落位：用户拖过的用保存值，否则按算法居中
     for (size_t r = 0; r < row_tops.size(); ++r) {
@@ -480,9 +654,11 @@ void DrawParamRow(int pi, int fi, float x, float y, float w, bool interactive) {
                                   4.0f * s, 6.0f * s, 2.0f * s, theme::kAccent);
 
                 wchar_t buf[64];
-                if (p.vstep >= 1.0f) {
+                // 小数位数跟着真实步长走，别再拿 catalog 里那个"默认值"当步长判断
+                const float dstep = ParamStep(pi);
+                if (dstep >= 1.0f) {
                     swprintf_s(buf, L"%.0f", v);
-                } else if (p.vstep >= 0.1f) {
+                } else if (dstep >= 0.1f) {
                     swprintf_s(buf, L"%.1f", v);
                 } else {
                     swprintf_s(buf, L"%.2f", v);
@@ -554,7 +730,7 @@ void DrawParamRow(int pi, int fi, float x, float y, float w, bool interactive) {
     }
 
     // ── 命中测试 ──
-    if (input::Pressed(0)) {
+    if (input::Pressed(0) && !g_click_used) {
         switch (p.kind) {
             case PK_SLIDER:
                 if (inside) {
@@ -565,13 +741,7 @@ void DrawParamRow(int pi, int fi, float x, float y, float w, bool interactive) {
                     float t = (mx - track_x) / track_w;
                     if (t < 0.0f) t = 0.0f;
                     if (t > 1.0f) t = 1.0f;
-                    float v = p.vmin + t * (p.vmax - p.vmin);
-                    if (p.vstep > 0.0f) {
-                        float steps = floorf((v - p.vmin) / p.vstep + 0.5f);
-                        v = p.vmin + steps * p.vstep;
-                        if (v > p.vmax) v = p.vmax;
-                    }
-                    cfg::SetParamValue(pi, v);
+                    cfg::SetParamValue(pi, SnapParam(pi, p.vmin + t * (p.vmax - p.vmin)));
                 }
                 break;
             case PK_TOGGLE:
@@ -601,13 +771,102 @@ void DrawParamRow(int pi, int fi, float x, float y, float w, bool interactive) {
         float t = (mx - track_x) / track_w;
         if (t < 0.0f) t = 0.0f;
         if (t > 1.0f) t = 1.0f;
-        float v = p.vmin + t * (p.vmax - p.vmin);
-        if (p.vstep > 0.0f) {
-            float steps = floorf((v - p.vmin) / p.vstep + 0.5f);
-            v = p.vmin + steps * p.vstep;
-            if (v > p.vmax) v = p.vmax;
+        cfg::SetParamValue(pi, SnapParam(pi, p.vmin + t * (p.vmax - p.vmin)));
+    }
+}
+
+// ── 顶部工具条：搜索框 + 配置档 ──────────────────────────────────
+void ToolbarRect(float* x, float* y, float* w, float* h) {
+    *x = kPad * g_s;
+    *y = kPad * g_s;
+    *w = kSearchW * g_s;
+    *h = kToolH * g_s;
+}
+
+void ProfileRect(int slot, float* x, float* y, float* w, float* h) {
+    float bx, by, bw, bh;
+    ToolbarRect(&bx, &by, &bw, &bh);
+    const float bwid = 20.0f * g_s;
+    const float gap = 4.0f * g_s;
+    *x = bx + bw + kGap * g_s + (float)(slot - 1) * (bwid + gap);
+    *y = by;
+    *w = bwid;
+    *h = bh;
+}
+
+bool InRect(float mx, float my, float x, float y, float w, float h) {
+    return mx >= x && mx <= x + w && my >= y && my <= y + h;
+}
+
+void DrawToolbar(bool interactive) {
+    const float s = g_s;
+    float bx, by, bw, bh;
+    ToolbarRect(&bx, &by, &bw, &bh);
+    const float mx = input::X();
+    const float my = input::Y();
+
+    float px[4], py[4], pw[4], ph[4];
+    for (int i = 1; i <= 3; ++i) ProfileRect(i, &px[i], &py[i], &pw[i], &ph[i]);
+
+    if (interactive) {
+        if (input::Pressed(0) && !g_click_used) {
+            for (int i = 1; i <= 3; ++i) {
+                if (!InRect(mx, my, px[i], py[i], pw[i], ph[i])) continue;
+                cfg::SwitchProfile(i);
+                g_search_focus = false;
+                g_click_used = true;
+                return;
+            }
+            if (InRect(mx, my, bx, by, bw, bh)) {
+                g_search_focus = true;
+                g_click_used = true;   // 抢掉这次点击，别再落到下面的面板上
+            } else {
+                g_search_focus = false;
+            }
         }
-        cfg::SetParamValue(pi, v);
+        if (!g_search_focus) return;
+        // 有焦点就把本帧按下、能转成字符的键吃进来
+        for (int vk = 1; vk < 256; ++vk) {
+            if (!input::KeyPressed(vk)) continue;
+            if (vk == VK_BACK) { SearchBackspace(); continue; }
+            if (vk == VK_RETURN || vk == VK_ESCAPE) { g_search_focus = false; continue; }
+            const UINT ch = MapVirtualKeyW((UINT)vk, MAPVK_VK_TO_CHAR) & 0xFFFF;
+            if (ch >= 0x20 && ch < 0x7F) SearchAppend((wchar_t)ch);
+        }
+        return;
+    }
+
+    // ── 绘制 ──
+    render::RoundRect(bx, by, bw, bh, 4.0f * s,
+                      g_search_focus ? theme::kRowHover : theme::kRow);
+    if (g_search_focus) {
+        render::RoundRectStroke(bx, by, bw, bh, 4.0f * s, 1.0f, theme::kAccent);
+    }
+    if (g_search_len == 0) {
+        render::Text(cfg::Chinese() ? L"\u641C\u7D22\u6A21\u5757\u2026" : L"Search...",
+                     bx + 6.0f * s, by, bw - 12.0f * s, bh, 10.0f * s,
+                     theme::kDim, ALIGN_LEFT, false);
+    } else {
+        render::Text(g_search, bx + 6.0f * s, by, bw - 12.0f * s, bh, 10.0f * s,
+                     theme::kOff, ALIGN_LEFT, false);
+    }
+    if (g_search_focus) {
+        // 光标：跟着已输入文本的宽度走
+        const float tw = render::Measure(g_search, 10.0f * s, false);
+        render::Rect(bx + 7.0f * s + tw, by + 5.0f * s, 1.5f * s, bh - 10.0f * s,
+                     theme::kAccent);
+    }
+
+    // 配置档按钮：左键直接切档（切之前会自动保存当前档）
+    const int cur = cfg::CurrentProfile();
+    for (int i = 1; i <= 3; ++i) {
+        const bool hot = InRect(mx, my, px[i], py[i], pw[i], ph[i]);
+        const bool act = (cur == i);
+        render::RoundRect(px[i], py[i], pw[i], ph[i], 3.0f * s,
+                          act ? theme::kAccent : (hot ? theme::kRowHover : theme::kRow));
+        wchar_t lb[2] = {(wchar_t)(L'0' + i), 0};
+        render::Text(lb, px[i], py[i], pw[i], ph[i], 9.5f * s,
+                     act ? theme::kHeadBg : theme::kOff, ALIGN_CENTER, false);
     }
 }
 
@@ -644,7 +903,7 @@ void DrawFeatureRow(int fi, const Panel& p, float row_x, float& row_y, bool inte
                          theme::kArrow, ALIGN_LEFT, false);
         }
     } else {
-        if (input::Pressed(0) && inside && g_drag_panel < 0) {
+        if (input::Pressed(0) && !g_click_used && inside && g_drag_panel < 0) {
             // 右半边点箭头区 = 展开，其他位置 = 切开关
             float arrow_x = row_x + w - 20.0f * s;
             const FeatureInfo& f = kFeatures[fi];
@@ -687,7 +946,7 @@ void DrawPanel(Panel& p, bool interactive) {
         DrawPanelChrome(p, head_inside || g_drag_panel == p.group);
     } else {
         // 栏头：按下开始拖，松开若没怎么动就当作折叠
-        if (input::Pressed(0) && head_inside && g_drag_panel < 0) {
+        if (input::Pressed(0) && !g_click_used && head_inside && g_drag_panel < 0) {
             g_drag_panel = p.group;
             g_drag_off_x = mx - p.x;
             g_drag_off_y = my - p.y;
@@ -736,7 +995,7 @@ void DrawPanel(Panel& p, bool interactive) {
                 float pad_x = 3.0f * s;
                 bool in_track = mx >= bar.bx - pad_x && mx <= bar.bx + bar.bw + pad_x &&
                                 my >= bar.by && my <= bar.by + bar.bh;
-                if (input::Pressed(0) && in_track) {
+                if (input::Pressed(0) && !g_click_used && in_track) {
                     float t = p.scroll / bar.max_scroll;
                     float thumb_y = bar.by + (bar.bh - bar.thumb_h) * t;
                     bool on_thumb = my >= thumb_y && my <= thumb_y + bar.thumb_h;
@@ -799,6 +1058,7 @@ void DrawPanel(Panel& p, bool interactive) {
     float row_y = body_y + 3.0f * s;
     for (int i = 0; i < kFeatureCount; ++i) {
         if (kFeatures[i].group != p.group) continue;
+        if (!FeatMatch(i)) continue;   // 搜索过滤：不匹配的行既不画也不占高度
         DrawFeatureRow(i, p, p.x + kInset * s, row_y, interactive);
     }
 
@@ -924,61 +1184,113 @@ void DrawNotifications() {
 
 void DrawHud() {
     const float s = g_s;
-    const float viewW = (float)render::Width();
-    float y = 8.0f * s;
 
-    // FPS
+    // FPS：位置/缩放/透明度/颜色/背景全读模块自己的参数，没调过就用原版出厂值
+    // （Python 里 FPS.posx=0.47104、posy=0.01130，就是左上角偏中间那条）。
     int fps_idx = FindFeatureByName(L"FPS");
     if (fps_idx >= 0 && cfg::ModuleOn(fps_idx)) {
+        const HudLook L = ReadHudLook(fps_idx, 0.47104f, 0.01130f, 1.0f, theme::kAccent);
         wchar_t buf[64];
         swprintf_s(buf, L"FPS \u00B7 %.0f", g_fps);
-        render::Text(buf, 8.0f * s, y, 200.0f * s, 14.0f * s, 10.0f * s, theme::kAccent,
+        const float ts = 10.0f * s * L.scale;
+        const float tw = render::Measure(buf, ts, true) + 4.0f * s;
+        const float th = ts * 1.4f;
+        float bx = L.x;
+        float by = L.y;
+        ClampHudBox(&bx, &by, tw, th);
+        if (L.bg) {
+            render::RoundRect(bx - 2.0f * s, by, tw + 4.0f * s, th, 2.0f * s,
+                              render::RgbaF(0.0f, 0.0f, 0.0f, L.bg_alpha * L.alpha));
+        }
+        render::Text(buf, bx, by, tw, th, ts, render::RgbaF(L.r, L.g, L.b, L.alpha),
                      ALIGN_LEFT, true);
-        y += 14.0f * s;
     }
 
-    // CPS
+    // CPS：同上（Python 里 CPS.posx=0.67708、posy=0.94753，屏幕底部偏右）。
     int cps_idx = FindFeatureByName(L"CPS");
     if (cps_idx >= 0 && cfg::ModuleOn(cps_idx)) {
+        const HudLook L = ReadHudLook(cps_idx, 0.67708f, 0.94753f, 1.0f, theme::kAccent);
         wchar_t buf[64];
         swprintf_s(buf, L"CPS \u00B7 %d", Cps());
-        render::Text(buf, 8.0f * s, y, 200.0f * s, 14.0f * s, 10.0f * s, theme::kAccent,
+        const float ts = 10.0f * s * L.scale;
+        const float tw = render::Measure(buf, ts, true) + 4.0f * s;
+        const float th = ts * 1.4f;
+        float bx = L.x;
+        float by = L.y;
+        ClampHudBox(&bx, &by, tw, th);
+        if (L.bg) {
+            render::RoundRect(bx - 2.0f * s, by, tw + 4.0f * s, th, 2.0f * s,
+                              render::RgbaF(0.0f, 0.0f, 0.0f, L.bg_alpha * L.alpha));
+        }
+        render::Text(buf, bx, by, tw, th, ts, render::RgbaF(L.r, L.g, L.b, L.alpha),
                      ALIGN_LEFT, true);
-        y += 14.0f * s;
     }
 
-    // ArrayList：右上角列出已开启功能
+    // ArrayList：已开启功能列表。
+    //
+    // ★ 原版 posx 是**列表右边缘**，不是左边缘 —— ArrayListScreen.py：
+    //     right_edge = screen_w * px;  bg_x = right_edge - bg_w
+    //   posy 是列表顶部。默认 0.98 / 0.02，贴着右上角。所以这里不能当左边缘用，
+    //   否则滑块拖到 0.98 时整块列表会被推到屏幕右边外面去。
     int arr_idx = FindFeatureByName(L"ArrayList");
     if (arr_idx >= 0 && cfg::ModuleOn(arr_idx)) {
-        float ly = 8.0f * s;
+        const HudLook L = ReadHudLook(arr_idx, 0.98f, 0.02f, 1.0f, theme::kAccent);
+        const bool fill = FeatParamUser(arr_idx, L"fill", 1.0f) > 0.5f;
+        const bool border = FeatParamUser(arr_idx, L"border", 1.0f) > 0.5f;
+        // color_mode：kOpt4 = { rgb, custom }，0 = 按行循环色相（原版默认），1 = 统一用 color_r/g/b
+        const int mode = (int)FeatParamUser(arr_idx, L"color_mode", 0.0f);
+
+        const float ts = 10.0f * s * L.scale;
+        const float row_h = 14.0f * s * L.scale;
+        const float stride = row_h + 1.0f * s * L.scale;
+        const float vh = (float)render::Height();
+        float ry = L.y;
+        int row = 0;
         for (int i = 0; i < kFeatureCount; ++i) {
             if (!cfg::ModuleOn(i)) continue;
             if (i == arr_idx) continue;
+            if (ry + row_h > vh) break;  // 列表放不下就截断，别画到屏幕外
             const wchar_t* name = FeatName(i);
-            float tw = render::Measure(name, 10.0f * s, false);
-            float box_w = tw + 12.0f * s;
-            float bx = viewW - box_w - 6.0f * s;
-            render::Rect(bx, ly, box_w, 14.0f * s, theme::kRow);
-            render::Rect(bx + box_w - 2.0f * s, ly, 2.0f * s, 14.0f * s, theme::kAccent);
-            render::Text(name, bx, ly, box_w - 6.0f * s, 14.0f * s, 10.0f * s,
-                         theme::kAccent, ALIGN_RIGHT, false);
-            ly += 15.0f * s;
+            const float tw = render::Measure(name, ts, false);
+            const float box_w = tw + 12.0f * s * L.scale;
+            float bx = L.x - box_w;
+            if (bx < 0.0f) bx = 0.0f;
+
+            D2D1_COLOR_F col;
+            if (mode == 0) {
+                // 彩虹渐变：起始色相 0.55（青绿，和主题色同族），每行推进一点
+                col = HueColor(0.55f + (float)row * 0.035f, L.alpha);
+            } else {
+                col = render::RgbaF(L.r, L.g, L.b, L.alpha);
+            }
+            if (fill || border) {
+                // 原版：border 用 0.45、fill 用 0.40，都是纯黑底
+                const float ba = (fill ? 0.40f : 0.45f) * L.alpha;
+                render::Rect(bx, ry, box_w, row_h, render::RgbaF(0.0f, 0.0f, 0.0f, ba));
+            }
+            render::Rect(bx + box_w - 2.0f * s, ry, 2.0f * s, row_h, col);
+            render::Text(name, bx, ry, box_w - 6.0f * s, row_h, ts, col, ALIGN_RIGHT, false);
+            ry += stride;
+            ++row;
         }
     }
 
     // Keystrokes：按键显示。位置/缩放/颜色都读模块自己的参数（原版就是这么做的），
     // 之前固定画在左下角，滑块怎么拖都不动，等于参数白给。
+    // 默认值取原版 keystrokes.py 的出厂值：posx=0.25677, posy=0.775, scale=0.75,
+    // alpha=0.55, bg_alpha=0.3 —— 用 FeatParamUser 而不是 FeatParam，
+    // 否则没调过的滑块会给出量程中点（posx 变 0.5 → 按键块跑到屏幕正中）。
     int ks_idx = FindFeatureByName(L"Keystrokes");
     if (ks_idx >= 0 && cfg::ModuleOn(ks_idx)) {
-        float ksc = FeatParam(ks_idx, L"scale", 1.0f);
+        float ksc = FeatParamUser(ks_idx, L"scale", 0.75f);
         if (ksc < 0.4f) ksc = 0.4f;
         if (ksc > 2.5f) ksc = 2.5f;
-        float alpha = FeatParam(ks_idx, L"alpha", 1.0f);
+        float alpha = FeatParamUser(ks_idx, L"alpha", 0.55f);
         if (alpha < 0.1f) alpha = 0.1f;
         if (alpha > 1.0f) alpha = 1.0f;
-        const float cr = FeatParam(ks_idx, L"color_r", 1.0f);
-        const float cg = FeatParam(ks_idx, L"color_g", 1.0f);
-        const float cb = FeatParam(ks_idx, L"color_b", 1.0f);
+        const float cr = FeatParamUser(ks_idx, L"color_r", 1.0f);
+        const float cg = FeatParamUser(ks_idx, L"color_g", 1.0f);
+        const float cb = FeatParamUser(ks_idx, L"color_b", 1.0f);
 
         const float box = 16.0f * s * ksc;
         const float gap = 2.0f * s * ksc;
@@ -990,16 +1302,16 @@ void DrawHud() {
 
         const float viewW2 = (float)render::Width();
         const float viewH2 = (float)render::Height();
-        float bx = FeatParam(ks_idx, L"posx", 0.25f) * viewW2;
-        float by = FeatParam(ks_idx, L"posy", 0.75f) * viewH2;
+        float bx = FeatParamUser(ks_idx, L"posx", 0.25677f) * viewW2;
+        float by = FeatParamUser(ks_idx, L"posy", 0.775f) * viewH2;
         // 钳在屏幕里：用户把位置拖到边上时别让按键块跑出去
         if (bx > viewW2 - totalW - pad) bx = viewW2 - totalW - pad;
         if (by > viewH2 - totalH - pad) by = viewH2 - totalH - pad;
         if (bx < pad) bx = pad;
         if (by < pad) by = pad;
 
-        if (FeatParam(ks_idx, L"bg", 0.0f) > 0.5f) {
-            float ba = FeatParam(ks_idx, L"bg_alpha", 0.35f);
+        if (FeatParamUser(ks_idx, L"bg", 0.0f) > 0.5f) {
+            float ba = FeatParamUser(ks_idx, L"bg_alpha", 0.3f);
             if (ba < 0.0f) ba = 0.0f;
             if (ba > 1.0f) ba = 1.0f;
             render::RoundRect(bx - pad, by - pad, totalW + pad * 2.0f, totalH + pad * 2.0f,
@@ -1083,7 +1395,9 @@ void HandleHotkeys() {
         }
     }
 
-    // 模块快捷键
+    // 模块快捷键。
+    // 搜索框有焦点时全部屏蔽 —— 否则在框里打一个字母，绑了那个键的模块就被切了。
+    if (g_search_focus) return;
     for (int i = 0; i < kFeatureCount; ++i) {
         int vk = cfg::ModuleBind(i);
         if (vk == 0) continue;
@@ -1145,6 +1459,8 @@ void SetVisible(bool v) {
         g_drag_panel = -1;
         g_drag_slider = -1;
         g_drag_scrollbar = -1;
+        g_search_focus = false;   // 收起面板就别再吃键盘了
+        g_click_used = false;
     }
     LogLine("[gui] visible=%d", v ? 1 : 0);
 }
@@ -1177,6 +1493,9 @@ void OnFrame() {
     HandleHotkeys();
     ReleaseDrags();
 
+    // 单击一次性锁每帧清一次：工具栏先抢，面板后看
+    g_click_used = false;
+
     if (g_visible) {
         // 注意：这里不再每帧调 ClipCursor(nullptr)。
         // 游戏每帧都会自己重新裁剪光标，我们跟着解一次只是互相打架，
@@ -1184,12 +1503,17 @@ void OnFrame() {
         // 里合成的那个按键（cfg::UnlockKey）。
         LayoutPanels();
 
+        // 工具条先处理点击，抢到就置 g_click_used，面板那边不会再响应同一次按下
+        DrawToolbar(true);
+
         for (size_t i = 0; i < g_panels.size(); ++i) {
             DrawPanel(g_panels[i], true);
         }
         for (size_t i = 0; i < g_panels.size(); ++i) {
             DrawPanel(g_panels[i], false);
         }
+        // 工具条最后画，保证压在面板上面
+        DrawToolbar(false);
 
         // 不画任何指针：面板里直接用系统光标（由 overlay.cpp 保证可见）。
     }

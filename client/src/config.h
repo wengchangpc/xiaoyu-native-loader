@@ -30,6 +30,11 @@ void SetModuleBind(int index, int vk);
 float ParamValue(int index, float def);
 void SetParamValue(int index, float v);
 
+// 这个参数有没有被显式写过。
+// 用途：滑块的"默认值"是区间中点（见 gui.cpp ParamDefault），直接拿来当默认
+// 会让颜色变成灰、位置跑到屏幕正中。HUD 那边要靠它区分"用户调过"和"没动过"。
+bool ParamIsSet(int index);
+
 // 面板位置（用户拖过才有效）
 bool PanelPos(int group, float* x, float* y, bool* collapsed);
 void SetPanelPos(int group, float x, float y, bool collapsed);
@@ -56,6 +61,12 @@ void SetAutoUnlock(bool v);
 // 合成哪个键来解锁鼠标，默认 VK_LMENU（左 Alt）
 int UnlockKey();
 void SetUnlockKey(int vk);
+
+// ── 配置档 ──────────────────────────────────────────────────────
+// 测试时经常要在"打架一套 / 挂机一套"之间来回切，单一配置不够用。
+// 1..3 三个槽，切档时先自动保存当前档再读目标档，所以不会丢改动。
+int CurrentProfile();            // 0 = 默认档
+void SwitchProfile(int slot);    // slot: 1..3，等于当前档时无动作
 
 }  // namespace cfg
 }  // namespace xiaoyu
