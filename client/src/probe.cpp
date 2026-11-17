@@ -28,6 +28,7 @@
 #include "probe.h"
 
 #include <windows.h>
+#include <cmath>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -211,6 +212,22 @@ void ResolveClass(ClassResult* r) {
       r->name, (void*)r->type_desc, (void*)r->col, (void*)r->vtable);
 }
 
+// ── 扫堆找单个类的实例 ──────────────────────────────────────────
+// 只搜一个 vtable 比一次搜 12 个快一个数量级（每个 needle 都要独立过一遍
+// 1.2GB），所以"等 LocalPlayer 出现"这种轮询用这个，全量枚举才用 FindInstances。
+int FindOne(const ClassResult* r, uintptr_t* out, int max) {
+    if (!r->chain_ok || out == nullptr || max <= 0) return 0;
+    const uint64_t needle = (uint64_t)r->vtable;
+    static mem::HeapHit hits[256];
+    size_t scanned = 0;
+    const int n = mem::ScanHeapQword(&needle, 1, hits, 256, &scanned);
+    int k = 0;
+    for (int i = 0; i < n && k < max; ++i) {
+        out[k++] = hits[i].addr;
+    }
+    return k;
+}
+
 // ── 扫堆找实例 ──────────────────────────────────────────────────
 void FindInstances(ClassResult* results, int count) {
     uint64_t needles[16];
@@ -228,9 +245,17 @@ void FindInstances(ClassResult* results, int count) {
     }
 
     P("\n扫描进程私有内存（%d 个 vtable 一起搜）...", nc);
-    const int kMaxHits = 512;
+    // 512 在假阳性多的时候会被打满（上一次实测正好 512，后面的类全被截断），
+    // 提到 2048 留足余量；每个 HeapHit 16 字节，也就 32KB。
+    const int kMaxHits = 2048;
     static mem::HeapHit hits[kMaxHits];
     size_t scanned = 0;
+
+    // 全量重扫，之前轮询阶段记下的地址作废
+    for (int i = 0; i < count; ++i) {
+        if (results[i].chain_ok) results[i].instance_count = 0;
+    }
+
     const ULONGLONG t0 = GetTickCount64();
     const int n = mem::ScanHeapQword(needles, nc, hits, kMaxHits, &scanned);
     const ULONGLONG dt = GetTickCount64() - t0;
@@ -322,9 +347,11 @@ void AnalyzeObject(const char* tag, uintptr_t inst, uintptr_t vt, int count,
         float xyz[3] = {0, 0, 0};
         if (!mem::Read(inst + off, xyz, sizeof(xyz))) break;
         if (!PlausibleCoord(xyz[0], xyz[1], xyz[2])) continue;
-        // 三个全 0 的几乎一定是未初始化区域，跳过
-        if (xyz[0] == 0.0f && xyz[1] == 0.0f && xyz[2] == 0.0f) continue;
-        P("     +0x%03X  (%.2f, %.2f, %.2f)", off, xyz[0], xyz[1], xyz[2]);
+        // 三轴都接近 0 的几乎都是未初始化区域，真实位置很少正好在原点
+        if (fabsf(xyz[0]) < 0.01f && fabsf(xyz[1]) < 0.01f && fabsf(xyz[2]) < 0.01f) {
+            continue;
+        }
+        P("     +0x%03X  (%.3f, %.3f, %.3f)", off, xyz[0], xyz[1], xyz[2]);
         if (++coords >= 24) {
             P("     ...（后面还有很多，先只列 24 个）");
             break;
@@ -371,15 +398,32 @@ void ProbeClientInstanceFields(ClassResult* results, int count) {
         if (strcmp(results[i].name, "LocalPlayer") == 0) lp = &results[i];
     }
 
+    // 挑一个"最像真对象"的实例：地址落在堆区（栈/低地址一律排除），
+    // 且 +8 是个有效指针。上一次实测里 instances[0] 是 probe 自己的
+    // needles 数组（栈上），把它当 ClientInstance 分析出来全是垃圾。
+    auto pick_real = [](const ClassResult* r) -> uintptr_t {
+        for (int k = 0; k < r->instance_count; ++k) {
+            const uintptr_t a = r->instances[k];
+            if (a < 0x100000000ULL) continue;   // 栈 / 静态区
+            uintptr_t f8 = 0;
+            if (!mem::Read(a + 8, &f8, sizeof(f8))) continue;
+            if (f8 < 0x10000) continue;
+            return a;
+        }
+        return r->instance_count > 0 ? r->instances[0] : 0;
+    };
+
     if (ci == nullptr) {
         P("\n没有 ClientInstance 实例，跳过字段探测");
     } else {
-        AnalyzeObject("ClientInstance", ci->instances[0], ci->vtable, count, results);
+        const uintptr_t a = pick_real(ci);
+        if (a != 0) AnalyzeObject("ClientInstance", a, ci->vtable, count, results);
     }
     if (lp == nullptr) {
         P("\n没有 LocalPlayer 实例（可能还在标题界面，没进世界）");
     } else {
-        AnalyzeObject("LocalPlayer", lp->instances[0], lp->vtable, count, results);
+        const uintptr_t a = pick_real(lp);
+        if (a != 0) AnalyzeObject("LocalPlayer", a, lp->vtable, count, results);
     }
 }
 
@@ -407,17 +451,50 @@ void Run() {
       (void*)mem::Base(), (double)mem::ImageSize() / 1048576.0,
       (int)mem::RegionCount());
 
+    // ── 阶段 1：RTTI 链条 ──
+    // 这一步只读主模块（快，几百毫秒），不依赖游戏状态，先把坐标定下来。
     P("\n=== RTTI 链条 ===");
     for (int i = 0; i < kClassCount; ++i) {
         g_results[i].name = kClasses[i];
         ResolveClass(&g_results[i]);
     }
 
+    int lp_idx = -1;
+    for (int i = 0; i < kClassCount; ++i) {
+        if (strcmp(g_results[i].name, "LocalPlayer") == 0) lp_idx = i;
+    }
+
+    // ── 阶段 2：等 LocalPlayer 出现 ──
+    // 注入时很可能还在标题界面 / 加载地形，这时候 LocalPlayer 根本不存在，
+    // 全量扫一遍只会扫到一堆假阳性。所以先用单个 needle 轮询，等它出现
+    // 再做完整枚举 —— 玩家一进世界，最多一个轮询周期就能抓到。
+    if (lp_idx >= 0 && g_results[lp_idx].chain_ok) {
+        P("\n等 LocalPlayer 出现（游戏没进世界时它不存在，每 ~3 秒探一次）...");
+        const int kMaxWait = 10;   // 10 次 × 约 3~6 秒 ≈ 半分钟，够用户切进世界了
+        for (int attempt = 0; attempt < kMaxWait; ++attempt) {
+            const int n = FindOne(&g_results[lp_idx], g_results[lp_idx].instances, 8);
+            if (n > 0) {
+                g_results[lp_idx].instance_count = n;
+                P("  第 %d 次探测命中 %d 个 LocalPlayer 实例", attempt + 1, n);
+                break;
+            }
+            if (attempt % 5 == 0) {
+                P("  第 %d 次探测：还没有 LocalPlayer（未进世界？）", attempt + 1);
+            }
+            Sleep(3000);
+        }
+        if (g_results[lp_idx].instance_count == 0) {
+            P("  !! 等了 %d 次仍然没有 LocalPlayer，直接做全量扫描", kMaxWait);
+        }
+    }
+
+    // ── 阶段 3：全量枚举 + 布局分析 ──
     FindInstances(g_results, kClassCount);
     ProbeClientInstanceFields(g_results, kClassCount);
 
-    // 顺手把主模块 dump 一份 —— 进程内 dump 不经过 ReadProcessMemory，
-    // 反作弊看不到，也就不会像外部扫描那样被中途打断。
+    // ── 阶段 4：dump 主模块 ──
+    // 进程内 dump 不经过 ReadProcessMemory，反作弊看不到。
+    // 外部已经 dump 过一份，这里的价值是"两边对比能确认读到的内容一致"。
     P("\n=== dump 主模块 ===");
     if (mem::DumpImage(L"C:\\Xiaoyu\\dump\\main.selfdump.exe")) {
         P("已写入 C:\\Xiaoyu\\dump\\main.selfdump.exe");

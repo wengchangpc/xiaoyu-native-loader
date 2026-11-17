@@ -625,8 +625,18 @@ uintptr_t ScanText(const char* ascii, int skip) {
 namespace {
 
 // 遍历整个进程的私有可写区域。fn 拿到的每一块保证可读。
+//
+// ★ 必须跳过当前线程的栈：扫堆找对象的调用方会在栈上放一份"要找的 vtable
+//   数组"（比如 needles[]），而栈同样是 MEM_PRIVATE + 可写。不跳过的话，
+//   那个数组会被当成"一堆对象首字段连续排列"，命中结果排在真对象前面，
+//   白白污染输出。实测就是这个坑：probe 把自己的 needles 数组报成了
+//   ClientInstance 实例。
 template <class Fn>
 void ForEachPrivateRegion(Fn fn, size_t* scanned) {
+    const NT_TIB* tib = (const NT_TIB*)NtCurrentTeb();
+    const uintptr_t stack_lo = (uintptr_t)tib->StackLimit;
+    const uintptr_t stack_hi = (uintptr_t)tib->StackBase;
+
     uintptr_t cur = 0x10000;
     const uintptr_t limit = (uintptr_t)1 << 47;
     size_t total = 0;
@@ -638,15 +648,17 @@ void ForEachPrivateRegion(Fn fn, size_t* scanned) {
         const size_t size = mbi.RegionSize;
         if (size == 0) break;
 
-        if (mbi.State == MEM_COMMIT && mbi.Type == MEM_PRIVATE &&
+        const uintptr_t rend = base + size;
+        const bool is_own_stack = (rend > stack_lo) && (base < stack_hi);
+
+        if (!is_own_stack && mbi.State == MEM_COMMIT && mbi.Type == MEM_PRIVATE &&
             ProtectReadable(mbi.Protect) && ProtectWritable(mbi.Protect)) {
             total += size;
             fn(base, size);
         }
 
-        const uintptr_t next = base + size;
-        if (next <= cur) break;
-        cur = next;
+        if (rend <= cur) break;
+        cur = rend;
     }
     if (scanned != nullptr) *scanned = total;
 }
