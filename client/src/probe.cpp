@@ -271,47 +271,115 @@ void FindInstances(ClassResult* results, int count) {
     }
 }
 
-// ── ClientInstance 字段探测 ─────────────────────────────────────
-// 拿到 ClientInstance* 之后，最想知道的是「哪个偏移是 LocalPlayer」。
-// 做法：把对象前 0x400 字节当 qword 数组扫一遍，凡是值落在堆上、
-// 且该地址首字段是某个已知 vtable 的，就报出来。
-void ProbeClientInstanceFields(ClassResult* results, int count) {
-    const ClassResult* ci = nullptr;
-    for (int i = 0; i < count; ++i) {
-        if (results[i].chain_ok && results[i].instance_count > 0 &&
-            strcmp(results[i].name, "ClientInstance") == 0) {
-            ci = &results[i];
+// ── 对象布局分析 ────────────────────────────────────────────────
+// Bedrock 的 getPos()/getRot() 是**内联**函数（不在 vtable 里），所以没法
+// 从虚表反推字段偏移。改用数据特征：
+//
+//   1) 玩家的碰撞箱宽 0.6f、高 1.8f 是写死的常量，在 Actor 里一定存在。
+//      找到它们的位置，就说明已经进入"Actor 的物理字段区"，
+//      pos 通常紧挨着这一片。
+//   2) 位置是三个连续的 float：|x|,|z| < 3e7（世界边界），y 在 -80~400 之间。
+//      同时排除 NaN/Inf 和全零。
+//
+// 两条线索交叉验证，比单独猜偏移可靠得多。假阳性会有，但把范围从
+// "整个对象"缩到"几十个候选"之后，人一眼就能认出来。
+bool PlausibleCoord(float x, float y, float z) {
+    if (!(x == x) || !(y == y) || !(z == z)) return false;   // NaN
+    const float kInf = 3.0e38f;
+    if (x > kInf || x < -kInf || y > kInf || y < -kInf || z > kInf || z < -kInf) {
+        return false;
+    }
+    if (y < -80.0f || y > 400.0f) return false;
+    if (x > 3.0e7f || x < -3.0e7f) return false;
+    if (z > 3.0e7f || z < -3.0e7f) return false;
+    return true;
+}
+
+void AnalyzeObject(const char* tag, uintptr_t inst, uintptr_t vt, int count,
+                   ClassResult* results) {
+    P("\n=== %s @ 0x%p 布局分析 ===", tag, (void*)inst);
+
+    // ① 已知常量锚点
+    P("  -- 常量锚点 --");
+    int anchors = 0;
+    for (int off = 0; off < 0x900; off += 4) {
+        float f = 0.0f;
+        if (!mem::Read(inst + off, &f, 4)) break;
+        if (f > 0.5999f && f < 0.6001f) {
+            P("     +0x%03X = 0.6f   （碰撞箱宽度）", off);
+            ++anchors;
+        } else if (f > 1.7999f && f < 1.8001f) {
+            P("     +0x%03X = 1.8f   （碰撞箱高度）", off);
+            ++anchors;
+        }
+    }
+    if (anchors == 0) P("     （没找到，可能这个版本的宽高不是 0.6/1.8）");
+
+    // ② 坐标三元组
+    P("  -- 疑似坐标三元组 --");
+    int coords = 0;
+    for (int off = 0; off < 0x900; off += 4) {
+        float xyz[3] = {0, 0, 0};
+        if (!mem::Read(inst + off, xyz, sizeof(xyz))) break;
+        if (!PlausibleCoord(xyz[0], xyz[1], xyz[2])) continue;
+        // 三个全 0 的几乎一定是未初始化区域，跳过
+        if (xyz[0] == 0.0f && xyz[1] == 0.0f && xyz[2] == 0.0f) continue;
+        P("     +0x%03X  (%.2f, %.2f, %.2f)", off, xyz[0], xyz[1], xyz[2]);
+        if (++coords >= 24) {
+            P("     ...（后面还有很多，先只列 24 个）");
             break;
         }
     }
-    if (ci == nullptr) {
-        P("\n没有 ClientInstance 实例，跳过字段探测");
-        return;
-    }
+    if (coords == 0) P("     （没有像坐标的三元组）");
 
-    const uintptr_t inst = ci->instances[0];
-    P("\n=== ClientInstance @ 0x%p 前 0x400 字节里的已知对象指针 ===",
-      (void*)inst);
-
-    int hits = 0;
-    for (int off = 8; off < 0x400; off += 8) {
+    // ③ 指向其它已知对象的指针（跨对象关系，最有价值）
+    P("  -- 指向其它已知对象的指针 --");
+    int ptrs = 0;
+    for (int off = 8; off < 0x900; off += 8) {
         uintptr_t p = 0;
         if (!mem::Read(inst + off, &p, sizeof(p))) break;
         if (p < 0x10000) continue;
-        // 看这个指针指向的对象首字段是不是某个已知 vtable
-        uintptr_t vt = 0;
-        if (!mem::Read(p, &vt, sizeof(vt))) continue;
+        uintptr_t pvt = 0;
+        if (!mem::Read(p, &pvt, sizeof(pvt))) continue;
         for (int i = 0; i < count; ++i) {
             if (!results[i].chain_ok) continue;
-            if (vt == results[i].vtable) {
-                P("  +0x%03X -> 0x%p  (%s)", off, (void*)p, results[i].name);
-                ++hits;
+            if (pvt == results[i].vtable && results[i].vtable != vt) {
+                P("     +0x%03X -> 0x%p  (%s)", off, (void*)p, results[i].name);
+                ++ptrs;
                 break;
             }
         }
     }
-    if (hits == 0) {
-        P("  （没有直接命中，说明字段里存的是间接引用或尚未初始化）");
+    if (ptrs == 0) P("     （没有直接指向已知对象的字段）");
+
+    // ④ 原始浮点视图，人工兜底
+    P("  -- 前 0x180 字节的浮点视图 --");
+    for (int row = 0; row < 0x180; row += 16) {
+        float f[4] = {0, 0, 0, 0};
+        if (!mem::Read(inst + row, f, sizeof(f))) break;
+        P("     +0x%03X  %12.4f %12.4f %12.4f %12.4f", row,
+          f[0], f[1], f[2], f[3]);
+    }
+}
+
+void ProbeClientInstanceFields(ClassResult* results, int count) {
+    const ClassResult* ci = nullptr;
+    const ClassResult* lp = nullptr;
+    for (int i = 0; i < count; ++i) {
+        if (!results[i].chain_ok || results[i].instance_count == 0) continue;
+        if (strcmp(results[i].name, "ClientInstance") == 0) ci = &results[i];
+        if (strcmp(results[i].name, "LocalPlayer") == 0) lp = &results[i];
+    }
+
+    if (ci == nullptr) {
+        P("\n没有 ClientInstance 实例，跳过字段探测");
+    } else {
+        AnalyzeObject("ClientInstance", ci->instances[0], ci->vtable, count, results);
+    }
+    if (lp == nullptr) {
+        P("\n没有 LocalPlayer 实例（可能还在标题界面，没进世界）");
+    } else {
+        AnalyzeObject("LocalPlayer", lp->instances[0], lp->vtable, count, results);
     }
 }
 
