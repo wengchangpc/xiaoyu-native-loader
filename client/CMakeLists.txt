@@ -19,6 +19,8 @@ add_library(xiaoyu_client SHARED
     src/dllmain.cpp
     src/input.cpp
     src/log.cpp
+    src/memory.cpp
+    src/probe.cpp
     src/render.cpp
     src/config.cpp
     src/gui.cpp

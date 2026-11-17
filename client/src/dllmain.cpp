@@ -21,6 +21,7 @@
 #include <windows.h>
 
 #include "log.h"
+#include "probe.h"
 
 namespace xiaoyu {
 void StartOverlay();
@@ -55,6 +56,14 @@ DWORD WINAPI BootThread(LPVOID param) {
     }
 
     xiaoyu::LogLine("[boot] 4/4 启动覆盖层线程");
+
+    // 进程内自诊断：走 RTTI 链定位 ClientInstance / LocalPlayer 等对象，
+    // 结果写 C:\Xiaoyu\dump\probe.log。
+    //
+    // ★ 必须放在 StartOverlay() 之前：那个函数会进窗口消息循环、不返回。
+    // ★ 延迟 3 秒是为了等进入世界 —— 注入到标题界面时 ClientInstance 还没建。
+    xiaoyu::probe::Start(3000);
+
     xiaoyu::StartOverlay();
     return 0;
 }
