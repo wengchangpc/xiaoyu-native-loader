@@ -198,24 +198,56 @@ void SendKeyTap(int vk) {
     }
 }
 
-// ── 低级鼠标钩子 ────────────────────────────────────────────────
-// 这里曾经用 RegisterRawInputDevices(RIDEV_INPUTSINK) 收滚轮，那是个致命错误：
-// Raw Input 的注册是按 (usagePage, usage) 的，同一个进程里只能有一份。
-// 我们注册鼠标、关面板时又 RIDEV_REMOVE，等于把**游戏自己的鼠标注册**一起删了 ——
-// 游戏靠它读相对位移转视角，删掉之后视角就永远不能转了。
+// ── 低级钩子（鼠标 + 键盘）──────────────────────────────────────
+// 踩过的两个坑，都别再来一次：
 //
-// WH_MOUSE_LL 是另一条通道，完全不碰 Raw Input 的注册表，安全。
+// 坑一：用 RegisterRawInputDevices(RIDEV_INPUTSINK) 收滚轮。
+//   Raw Input 的注册按 (usagePage, usage) 在进程内唯一，注册我们这份等于
+//   顶掉游戏那份；关面板时再 RIDEV_REMOVE 就把**游戏自己的注册**一起删了，
+//   游戏再也收不到相对位移，视角永久锁死。
+//
+// 坑二（本次）：把 WH_MOUSE_LL 装在覆盖层渲染线程上。
+//   低级钩子的回调是**同步**的 —— 系统把事件派给安装钩子的那个线程，
+//   回调返回之前全系统的鼠标输入都堵在那儿。渲染线程每帧画完还要
+//   Sleep(最多 50ms)，于是整台机器的鼠标一卡一卡，游戏挂后台、在浏览器里
+//   操作也照样卡，只有关掉游戏（DLL 卸载、钩子被系统清掉）才恢复。
+//
+// 所以：钩子一律由下面这个专用线程持有。它除了阻塞等消息什么都不干，
+// 回调里只读一个字段就返回，不给系统输入增加任何可感知延迟。
+
 HHOOK g_hook = nullptr;
-bool g_want_wheel = false;
-bool g_want_phys = false;
+volatile LONG g_want_wheel = 0;
+volatile LONG g_want_phys = 0;
 volatile LONG g_phys_left = 0;
 
+HHOOK g_kb_hook = nullptr;
+volatile LONG g_want_phys_key = 0;
+volatile LONG g_phys_space = 0;
+
+HANDLE g_hook_thread = nullptr;
+HANDLE g_hook_ready = nullptr;
+DWORD g_hook_tid = 0;
+const UINT WM_HOOK_SYNC = WM_APP + 0x51;
+const UINT WM_HOOK_QUIT = WM_APP + 0x52;
+
+// 取"我们自己的模块句柄"。低级钩子的 hMod 应该指向钩子过程所在的模块；
+// 传 GetModuleHandleW(nullptr) 拿到的是游戏 exe，虽然 LL 钩子不跨进程注入、
+// 多数情况下也能work，但用错模块句柄属于约定不符，稳一点按地址反查。
+HMODULE SelfModule(const void* addr) {
+    HMODULE m = nullptr;
+    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                           GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                       reinterpret_cast<LPCWSTR>(addr), &m);
+    return m;
+}
+
 LRESULT CALLBACK MouseHookProc(int code, WPARAM wp, LPARAM lp) {
+    // 这个函数跑在钩子线程上，必须极快返回。只做字段读写，不打日志、不加锁。
     if (code == HC_ACTION) {
         const MSLLHOOKSTRUCT* ms = reinterpret_cast<const MSLLHOOKSTRUCT*>(lp);
         if (ms != nullptr) {
             if (wp == WM_MOUSEWHEEL) {
-                if (g_want_wheel) {
+                if (g_want_wheel != 0) {
                     const short delta = (short)HIWORD(ms->mouseData);
                     AddWheel((float)delta / (float)WHEEL_DELTA);
                 }
@@ -228,21 +260,106 @@ LRESULT CALLBACK MouseHookProc(int code, WPARAM wp, LPARAM lp) {
     return CallNextHookEx(nullptr, code, wp, lp);
 }
 
-void UpdateHook() {
-    const bool need = g_want_wheel || g_want_phys;
-    if (need && g_hook == nullptr) {
-        g_hook = SetWindowsHookExW(WH_MOUSE_LL, MouseHookProc, GetModuleHandleW(nullptr), 0);
+LRESULT CALLBACK KeyHookProc(int code, WPARAM wp, LPARAM lp) {
+    // 为什么需要它：NoJumpDelay 要「按住空格时反复顶一次跳」，就得知道
+    // **物理上**空格是不是按着。GetAsyncKeyState 做不到 —— 我们为了顶跳会
+    // 成对注入 UP/DOWN，注入的 DOWN 会把状态表写成"按下"，玩家真松手之后
+    // 仍然读到按下，于是空格被永久按住、人一直跳。
+    // 和 AC 判物理左键是同一个坑，解法也一样：LL 钩子 + LLKHF_INJECTED 过滤。
+    // 只关心空格，其他键原样放行。
+    if (code == HC_ACTION) {
+        const KBDLLHOOKSTRUCT* kb = reinterpret_cast<const KBDLLHOOKSTRUCT*>(lp);
+        if (kb != nullptr && (kb->flags & LLKHF_INJECTED) == 0) {
+            if (kb->vkCode == VK_SPACE) {
+                if (wp == WM_KEYDOWN || wp == WM_SYSKEYDOWN) {
+                    g_phys_space = 1;
+                } else if (wp == WM_KEYUP || wp == WM_SYSKEYUP) {
+                    g_phys_space = 0;
+                }
+            }
+        }
+    }
+    return CallNextHookEx(nullptr, code, wp, lp);
+}
+
+// 只在钩子线程上调。
+void ApplyHookState() {
+    // 鼠标钩子
+    const bool need_mouse = (g_want_wheel != 0) || (g_want_phys != 0);
+    if (need_mouse && g_hook == nullptr) {
+        g_hook = SetWindowsHookExW(WH_MOUSE_LL, MouseHookProc, SelfModule((const void*)&MouseHookProc), 0);
         if (g_hook == nullptr) {
             LogLine("[input] 装鼠标钩子失败 err=%lu", (unsigned long)GetLastError());
         } else {
-            LogLine("[input] 鼠标钩子已挂上 wheel=%d phys=%d", g_want_wheel ? 1 : 0,
-                    g_want_phys ? 1 : 0);
+            LogLine("[input] 鼠标钩子已挂上（专用线程）");
         }
-    } else if (!need && g_hook != nullptr) {
+    } else if (!need_mouse && g_hook != nullptr) {
         UnhookWindowsHookEx(g_hook);
         g_hook = nullptr;
         g_phys_left = 0;
     }
+
+    // 键盘钩子
+    if (g_want_phys_key != 0 && g_kb_hook == nullptr) {
+        g_kb_hook = SetWindowsHookExW(WH_KEYBOARD_LL, KeyHookProc, SelfModule((const void*)&KeyHookProc), 0);
+        if (g_kb_hook == nullptr) {
+            LogLine("[input] 装键盘钩子失败 err=%lu", (unsigned long)GetLastError());
+        } else {
+            LogLine("[input] 键盘钩子已挂上（专用线程，只跟踪空格）");
+        }
+    } else if (g_want_phys_key == 0 && g_kb_hook != nullptr) {
+        UnhookWindowsHookEx(g_kb_hook);
+        g_kb_hook = nullptr;
+        g_phys_space = 0;
+    }
+}
+
+DWORD WINAPI HookThreadProc(LPVOID param) {
+    (void)param;
+    g_hook_tid = GetCurrentThreadId();
+    MSG msg;
+    // 先 Peek 一次把消息队列建出来，否则后面的 PostThreadMessage 会失败
+    PeekMessageW(&msg, nullptr, 0, 0, PM_NOREMOVE);
+    if (g_hook_ready != nullptr) SetEvent(g_hook_ready);
+    ApplyHookState();
+
+    while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
+        if (msg.message == WM_HOOK_QUIT) break;
+        if (msg.message == WM_HOOK_SYNC) {
+            ApplyHookState();
+            continue;
+        }
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
+
+    // 退出前无条件摘掉，别把钩子留在系统里
+    if (g_hook != nullptr) { UnhookWindowsHookEx(g_hook); g_hook = nullptr; }
+    if (g_kb_hook != nullptr) { UnhookWindowsHookEx(g_kb_hook); g_kb_hook = nullptr; }
+    g_phys_left = 0;
+    g_phys_space = 0;
+    g_hook_tid = 0;
+    return 0;
+}
+
+// 需求变化时调：第一次会把线程拉起来，之后只是让线程重新评估装不装钩子。
+void SyncHookThread() {
+    if (g_hook_thread == nullptr) {
+        g_hook_ready = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        g_hook_thread = CreateThread(nullptr, 0, HookThreadProc, nullptr, 0, nullptr);
+        if (g_hook_thread == nullptr) {
+            LogLine("[input] 钩子线程创建失败 err=%lu", (unsigned long)GetLastError());
+            if (g_hook_ready != nullptr) { CloseHandle(g_hook_ready); g_hook_ready = nullptr; }
+            return;
+        }
+        if (g_hook_ready != nullptr) {
+            WaitForSingleObject(g_hook_ready, 2000);
+            CloseHandle(g_hook_ready);
+            g_hook_ready = nullptr;
+        }
+        return;   // 线程启动时已经 Apply 过一次
+    }
+    if (g_hook_tid != 0) PostThreadMessageW(g_hook_tid, WM_HOOK_SYNC, 0, 0);
 }
 
 bool IsCursorClipped() {
@@ -263,68 +380,35 @@ bool CursorVisible() {
 }
 
 void SetWheelWanted(bool on) {
-    if (g_want_wheel == on) return;
-    g_want_wheel = on;
-    UpdateHook();
+    if ((g_want_wheel != 0) == on) return;
+    g_want_wheel = on ? 1 : 0;
+    SyncHookThread();
 }
 
 void SetPhysicalWanted(bool on) {
-    if (g_want_phys == on) return;
-    g_want_phys = on;
-    UpdateHook();
+    if ((g_want_phys != 0) == on) return;
+    g_want_phys = on ? 1 : 0;
+    SyncHookThread();
+}
+
+void SetPhysicalKeyWanted(bool on) {
+    if ((g_want_phys_key != 0) == on) return;
+    g_want_phys_key = on ? 1 : 0;
+    SyncHookThread();
 }
 
 bool PhysLeftDown() { return g_phys_left != 0; }
 
-// ── 低级键盘钩子 ────────────────────────────────────────────────
-// 为什么必须要它：NoJumpDelay / AutoJumpSpam 要「按住空格时反复顶一次跳」，
-// 就得知道**物理上**空格是不是按着。GetAsyncKeyState 做不到 ——
-// 我们为了顶跳会成对注入 UP/DOWN，注入的 DOWN 会把状态表写成"按下"，
-// 玩家真松手之后我们仍然读到按下，于是空格被永久按住、人一直跳。
-// 和 AC 那边判物理左键是同一个坑，解法也一样：WH_KEYBOARD_LL +
-// LLKHF_INJECTED 过滤。只关心空格一个键，别的键原样放行。
-HHOOK g_kb_hook = nullptr;
-bool g_want_phys_key = false;
-volatile LONG g_phys_space = 0;
-
-LRESULT CALLBACK KeyHookProc(int code, WPARAM wp, LPARAM lp) {
-    if (code == HC_ACTION) {
-        const KBDLLHOOKSTRUCT* kb = reinterpret_cast<const KBDLLHOOKSTRUCT*>(lp);
-        if (kb != nullptr && (kb->flags & LLKHF_INJECTED) == 0) {
-            if (kb->vkCode == VK_SPACE) {
-                if (wp == WM_KEYDOWN || wp == WM_SYSKEYDOWN) {
-                    g_phys_space = 1;
-                } else if (wp == WM_KEYUP || wp == WM_SYSKEYUP) {
-                    g_phys_space = 0;
-                }
-            }
-        }
-    }
-    return CallNextHookEx(nullptr, code, wp, lp);
-}
-
-void UpdateKeyHook() {
-    if (g_want_phys_key && g_kb_hook == nullptr) {
-        g_kb_hook = SetWindowsHookExW(WH_KEYBOARD_LL, KeyHookProc, GetModuleHandleW(nullptr), 0);
-        if (g_kb_hook == nullptr) {
-            LogLine("[input] 装键盘钩子失败 err=%lu", (unsigned long)GetLastError());
-        } else {
-            LogLine("[input] 键盘钩子已挂上（只跟踪空格物理状态）");
-        }
-    } else if (!g_want_phys_key && g_kb_hook != nullptr) {
-        UnhookWindowsHookEx(g_kb_hook);
-        g_kb_hook = nullptr;
-        g_phys_space = 0;
-    }
-}
-
-void SetPhysicalKeyWanted(bool on) {
-    if (g_want_phys_key == on) return;
-    g_want_phys_key = on;
-    UpdateKeyHook();
-}
-
 bool PhysSpaceDown() { return g_phys_space != 0; }
+
+void ShutdownHooks() {
+    if (g_hook_thread == nullptr) return;
+    if (g_hook_tid != 0) PostThreadMessageW(g_hook_tid, WM_HOOK_QUIT, 0, 0);
+    WaitForSingleObject(g_hook_thread, 3000);
+    CloseHandle(g_hook_thread);
+    g_hook_thread = nullptr;
+    g_hook_tid = 0;
+}
 
 }  // namespace input
 }  // namespace xiaoyu

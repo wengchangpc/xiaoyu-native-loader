@@ -117,7 +117,6 @@ HWND FindGameWindow() {
 // 千万不要在这里切进相对光标模式再自绘一个，那会出现"两个光标一起动"。
 bool g_raw_hooked = false;      // 只在状态真正切换时打日志
 ULONGLONG g_raw_reassert_at = 0;
-ULONGLONG g_clip_refresh_at = 0;
 
 void HookMouseToOverlay(bool on) {
     if (g_overlay == nullptr) return;
@@ -259,20 +258,39 @@ void ToggleGameCursorRelease(const char* why, bool verify) {
 // 面板打开时游戏已经不管光标了，如果让它跑到窗口外点到别的窗口，
 // 游戏会失焦并弹出 Esc 菜单。窗口被移动/改尺寸后锁定区域会过期，
 // 所以调用方要定期重设。
-void ClipToGameClient() {
+// 把光标锁在游戏客户区里 / 解锁。
+//
+// ClipCursor 是**桌面级共享状态**，不是我们一个窗口的事：一旦残留，
+// 用户切到浏览器、聊天窗口时鼠标整个被困在游戏那块矩形里，手感就是
+// "鼠标一卡一卡"。所以判定条件必须收得很紧 ——
+// 只有「面板开着 且 游戏是前台」才锁，其余任何情况一律解锁，
+// 而且这套判定要放在主循环里每轮都跑（不能只放在"覆盖层可见"的分支里，
+// 游戏一进后台那个分支就不执行了，锁就永远解不掉）。
+bool g_clip_on = false;
+
+void UpdateCursorClip(bool want) {
+    if (!want) {
+        if (g_clip_on) {
+            ClipCursor(nullptr);
+            g_clip_on = false;
+        }
+        return;
+    }
     if (g_game == nullptr || !IsWindow(g_game)) return;
-    // 游戏不是前台时绝对不能锁：光标是桌面级共享资源，锁上之后用户切到
-    // 浏览器/聊天窗口都点不动，会以为系统卡死了。
     if (GetForegroundWindow() != g_game) {
-        ClipCursor(nullptr);
+        if (g_clip_on) {
+            ClipCursor(nullptr);
+            g_clip_on = false;
+        }
         return;
     }
     RECT cr = {};
     if (!GetClientRect(g_game, &cr)) return;
     POINT tl = {0, 0};
-    ClientToScreen(g_game, &tl);
+    if (!ClientToScreen(g_game, &tl)) return;
     RECT clip = {tl.x, tl.y, tl.x + (cr.right - cr.left), tl.y + (cr.bottom - cr.top)};
     ClipCursor(&clip);
+    g_clip_on = true;
 }
 
 // 面板可见性变化时切换命中测试模式
@@ -301,7 +319,9 @@ void UpdateInputMode() {
                      SWP_FRAMECHANGED);
 
     if (want) {
-        ClipToGameClient();
+        // 光标锁定不在这里做：它由主循环每轮按「面板开着 且 游戏在前台」
+        // 统一开关。放在这里的话，一旦游戏被切到后台，这个分支就不再执行，
+        // 锁就永远解不掉 —— 桌面光标会被困在游戏窗口里。
         // 不再抢前台。失焦会让基岩版弹出自己的 Esc 菜单，
         // 那个菜单既会跟 GUI 抢置顶，又会在关掉 GUI 之后继续暂停游戏。
         // 改成接管鼠标的 Raw Input：游戏收不到位移就等于视角冻结，
@@ -312,9 +332,6 @@ void UpdateInputMode() {
         // 顺便让渲染层在下一帧做一次像素自检，把面板的实际绘制范围写进日志
         render::RequestSelfCheck();
     } else {
-        // 必须解掉打开时加的光标锁定。ClipCursor 是桌面级共享状态，
-        // 不解的话光标出了客户区就再也回不来，整个系统都受影响。
-        ClipCursor(nullptr);
         HookMouseToOverlay(false);
         // 把前台还给游戏，视角控制立刻恢复
         if (cfg::TakeFocus()) ReleaseToGame();
@@ -336,10 +353,22 @@ void FollowGameWindow() {
     // 游戏最小化 / 不在前台时把覆盖窗口收起来，免得盖在别人窗口上
     bool active = !IsIconic(g_game) && GetForegroundWindow() == g_game;
     if (!active) {
+        // 游戏一失焦就会弹出它自己的 Esc 菜单。这时候面板必须一起收起，
+        // 否则回到游戏时面板和暂停菜单会同时压着，而且面板还占着"接管鼠标"
+        // 的状态（视角冻结、点击被我们吞掉），看起来就像游戏卡死了。
+        if (gui::Visible()) {
+            gui::SetVisible(false);
+            LogLine("[overlay] 游戏失去前台，面板自动收起");
+        }
         if (g_visible) {
             ShowWindow(g_overlay, SW_HIDE);
             g_visible = false;
         }
+        // 人不在游戏里，物理按键状态没意义，把全局钩子摘掉：
+        // 少一分被反作弊看到的东西，也少一层系统输入转发。
+        // 回到游戏后 modules::Tick() 会重新提出需求。
+        input::SetPhysicalWanted(false);
+        input::SetPhysicalKeyWanted(false);
         return;
     }
 
@@ -528,6 +557,11 @@ int OverlayMain() {
 
         FollowGameWindow();
 
+        // 光标锁定的唯一决策点：每轮都跑，条件不满足就立刻解锁。
+        // 绝对不要挪进下面 if (g_visible) 里面 —— 游戏一进后台那个分支
+        // 就不执行了，ClipCursor 会一直残留，用户整个桌面的光标都被困住。
+        UpdateCursorClip(g_visible && gui::Visible());
+
         if (g_visible) {
             // 注意：不要在这里调 input::NewFrame()。
             // gui::OnFrame() 内部已经调过了，一个帧里调两次会把 pressed/released
@@ -540,12 +574,6 @@ int OverlayMain() {
                 if (now >= g_raw_reassert_at) {
                     g_raw_reassert_at = now + 1000;
                     HookMouseToOverlay(true);
-                }
-                // 光标锁定刷新得比 Raw Input 更勤：窗口可能被拖动/改过尺寸，
-                // 更关键的是用户一旦 Alt-Tab 出去就要立刻解锁，不能等一秒。
-                if (now >= g_clip_refresh_at) {
-                    g_clip_refresh_at = now + 250;
-                    ClipToGameClient();
                 }
             }
             RenderOnce();
@@ -634,8 +662,13 @@ int OverlayMain() {
 
     // 退出前必须把鼠标 Raw Input 还给游戏，否则游戏视角会一直锁着；
     // 光标锁定同理，不解的话整个桌面的光标都出不了游戏窗口。
-    ClipCursor(nullptr);
+    UpdateCursorClip(false);
+    ClipCursor(nullptr);          // 双保险：确认桌面级剪裁一定被清掉
+    g_clip_on = false;
     HookMouseToOverlay(false);
+    // 停掉钩子线程并摘钩。留着不管的话，DLL 一旦被卸载，
+    // 系统回调到已释放的代码段就是直接崩进程。
+    input::ShutdownHooks();
     render::Shutdown();
     if (g_overlay != nullptr) DestroyWindow(g_overlay);
     g_overlay = nullptr;

@@ -60,13 +60,19 @@ bool IsCursorClipped();
 // 所以这个才是判断"游戏有没有抓住鼠标"的可靠指标。
 bool CursorVisible();
 
-// 低级鼠标钩子（WH_MOUSE_LL）的两个用途，按需开关，内部引用计数。
-//   SetWheelWanted  : 面板打开期间收滚轮（钩子不影响 Raw Input，
-//                      这一点非常关键 —— 见 overlay.cpp 里旧代码的注释）
-//   SetPhysicalWanted: 自动连点需要知道"物理左键是不是按着"，
-//                      要靠 MSLLHOOKSTRUCT.flags 里的 LLMHF_INJECTED 过滤自己注入的事件
+// 低级钩子（WH_MOUSE_LL / WH_KEYBOARD_LL），按需开关。
+// ★ 这些钩子由一个**专用线程**持有，因为 LL 钩子的回调是同步的：
+//   装在哪个线程上，就用那个线程的消息循环执行；回调返回前全系统的
+//   鼠标/键盘输入都会被堵住。装在渲染线程上会把整台机器拖成一卡一卡。
+// 两个用途：
+//   SetWheelWanted  : 面板打开期间收滚轮
+//   SetPhysicalWanted: 自动连点 / 攻击冲刺重置 需要知道"物理左键是不是按着"，
+//                      靠 MSLLHOOKSTRUCT.flags 里的 LLMHF_INJECTED 过滤注入事件
 void SetWheelWanted(bool on);
 void SetPhysicalWanted(bool on);
+
+// 退出前必须调：把钩子线程停掉并摘钩，否则钩子会留在系统里。
+void ShutdownHooks();
 
 // 物理（非注入）左键是否按下
 bool PhysLeftDown();
