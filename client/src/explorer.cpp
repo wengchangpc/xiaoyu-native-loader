@@ -84,7 +84,7 @@ const uint32_t kBlockSourceOff = 0x0DE8;
 // 要读到 BlockSource 的最后一个字节，所以对象至少要有这么长
 const uint32_t kMinTail = kBlockSourceOff + 8;
 
-const int kMaxActors = 1024;
+const int kMaxActors = 4096;
 const int kMaxRefs = 16384;
 
 struct ActorHit {
@@ -137,6 +137,28 @@ bool PlausibleVec3(const float* v) {
     return true;
 }
 
+// ── 校验 +0xDE8 是不是真的 BlockSource ─────────────────────────
+// 这是整套判据里最硬的一条，也是第一版翻车之后补上的。
+//
+// 第一版只验了"mPos / mPosPrev 两个位置都是合法坐标且距离 < 64"，
+// 结果扫出 1024 个假阳性打成上限，一个真 Actor 都没有：
+//   UBlockComponentDescription / VITrait::BlockTrait /
+//   UOrbitalDirectionalLightRenderData ...
+// 这些对象的 +0xCE0 附近恰好是 0.298 / 1.0 / 0.6 这类归一化浮点参数，
+// 全部落在 [-80, 400] 里，两点距离也小于 64 —— 判据根本挡不住。
+//
+// BlockSource 这一条几乎不可能误报：要求 +0xDE8 是一个堆指针，而且
+// 它指向的对象的 vtable 反查出来必须是 "BlockSource"。随机数据碰不上。
+const char* ClassOf(uintptr_t vt);   // 前置声明，定义在下面
+
+bool IsBlockSourcePtr(uintptr_t p) {
+    if (p < 0x100000000ULL || p >= 0x7FFF00000000ULL) return false;
+    uintptr_t vt = 0;
+    if (!ReadPtrSafe(p, &vt)) return false;
+    const char* nm = ClassOf(vt);
+    return nm != nullptr && strcmp(nm, "BlockSource") == 0;
+}
+
 // ── 判定一个地址是不是 Actor ────────────────────────────────────
 void TryActor(uintptr_t obj) {
     if (g_actor_count >= kMaxActors) {
@@ -158,14 +180,17 @@ void TryActor(uintptr_t obj) {
     const float dz = pos[2] - prev[2];
     if (dx * dx + dy * dy + dz * dz > 64.0f * 64.0f) return;
 
+    uintptr_t bs = 0;
+    if (!ReadPtrSafe(obj + kBlockSourceOff, &bs)) return;
+    if (!IsBlockSourcePtr(bs)) return;
+
     ActorHit* h = &g_actors[g_actor_count];
     h->addr = obj;
     h->vtable = 0;
     ReadPtrSafe(obj, &h->vtable);
     memcpy(h->pos, pos, sizeof(pos));
     memcpy(h->prev, prev, sizeof(prev));
-    h->block_source = 0;
-    ReadPtrSafe(obj + kBlockSourceOff, &h->block_source);
+    h->block_source = bs;
 
     ++g_actor_count;
 }
@@ -417,8 +442,19 @@ void Run() {
     for (int pass = 0; pass < 2; ++pass) {
         g_actor_count = 0;
         g_overflow = false;
+        // 每 128MB 打一行进度。第一版扫了 18 秒之后整个游戏消失，而日志里
+        // 完全看不出是"扫完了没找到"还是"扫到一半被反作弊杀了"——
+        // 有进度才能对着最后一行定位。
+        size_t done_bytes = 0;
+        size_t next_mark = 128u * 1024u * 1024u;
         for (int i = 0; i < g_range_count; ++i) {
             PassActors(g_ranges[i].base, g_ranges[i].size, vt_lo, vt_hi);
+            done_bytes += g_ranges[i].size;
+            if (done_bytes >= next_mark) {
+                P("  ...已扫 %.0f / %.0f MB, 命中 %d",
+                  (double)done_bytes / 1048576.0, (double)total / 1048576.0, g_actor_count);
+                next_mark += 128u * 1024u * 1024u;
+            }
         }
         if (g_actor_count > 0) break;
         if (pass == 0) {
@@ -435,8 +471,9 @@ void Run() {
     // ── 输出 Actor 列表 ──
     P("");
     P("=== ACTOR LIST ===");
+    const int kPrintMax = 200;   // 上千行日志既刷屏又拖慢写盘，只打前 200
     uintptr_t local_player = 0;
-    for (int i = 0; i < g_actor_count; ++i) {
+    for (int i = 0; i < g_actor_count && i < kPrintMax; ++i) {
         const ActorHit& h = g_actors[i];
         const char* nm = ClassOf(h.vtable);
         if (nm != nullptr && strcmp(nm, "LocalPlayer") == 0) local_player = h.addr;
@@ -455,11 +492,13 @@ void Run() {
     // 这条能反过来验证 +0xDE8 对所有 Actor 都成立，而不只是 LocalPlayer。
     P("");
     P("=== BlockSource 一致性 ===");
-    for (int i = 0; i < g_actor_count; ++i) {
+    const int kConsistMax = 256;   // O(n^2)，n 大了会卡
+    const int consist_n = g_actor_count < kConsistMax ? g_actor_count : kConsistMax;
+    for (int i = 0; i < consist_n; ++i) {
         const uintptr_t bs = g_actors[i].block_source;
         if (bs == 0) continue;
         int same = 0;
-        for (int j = 0; j < g_actor_count; ++j) {
+        for (int j = 0; j < consist_n; ++j) {
             if (g_actors[j].block_source == bs) ++same;
         }
         // 只报第一出现的那次，避免同一个值打印 20 遍
