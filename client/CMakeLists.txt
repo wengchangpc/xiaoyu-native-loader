@@ -13,10 +13,16 @@ endif()
 # 静态 CRT：目标机不需要装 VC 运行库
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
-# hook.cpp 已从构建里摘掉：这个客户端是 OpenGL 渲染，没有 DXGI 交换链，
-# Present 钩子永远不会触发。文件留着做参考，但不再参与编译。
+# hook.cpp 已从构建里摘掉。
+#   原先摘掉的理由写的是"这个客户端是 OpenGL 渲染，没有 DXGI 交换链"，
+#   那个判断是错的：目录里有 dxcompiler.dll / dxil.dll / nvngx_dlss.dll，
+#   .exp 里有一整套 NVSDK_NGX_D3D12_* 导入（CreateFeature / EvaluateFeature /
+#   GetParameters 共 24 个），渲染是 D3D12。
+#   但摘掉的决定本身是对的 —— 覆盖窗口方案和渲染方式解耦，不需要挂 Present。
+#   文件留着做参考，不参与编译。
 add_library(xiaoyu_client SHARED
     src/dllmain.cpp
+    src/explorer.cpp
     src/input.cpp
     src/log.cpp
     src/memory.cpp

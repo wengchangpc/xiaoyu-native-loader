@@ -20,6 +20,7 @@
 //     - safe.txt 存在时游戏正常    → 是我们的覆盖层代码的问题
 #include <windows.h>
 
+#include "explorer.h"
 #include "log.h"
 #include "probe.h"
 
@@ -57,12 +58,18 @@ DWORD WINAPI BootThread(LPVOID param) {
 
     xiaoyu::LogLine("[boot] 4/4 启动覆盖层线程");
 
-    // 进程内自诊断：走 RTTI 链定位 ClientInstance / LocalPlayer 等对象，
-    // 结果写 C:\Xiaoyu\dump\probe.log。
+    // 进程内自诊断（已完成的阶段）：
+    //   probe.cpp   走 RTTI 链定位 ClientInstance / LocalPlayer，结果写 probe.log
+    //   explorer.cpp 全堆扫实体 + 反查容器，结果写 explorer.log
     //
+    // 现在只跑 explorer —— probe 那套信息（RTTI 全表、ClientInstance/LocalPlayer
+    // 地址、Level/Dimension 链路）已经拿到并固化进 sdk.h 了，再跑一遍只是多花
+    // 30 秒扫一遍堆。要回去看 RTTI 细节时把下面这行放开即可。
+    // xiaoyu::probe::Start(3000);
+
     // ★ 必须放在 StartOverlay() 之前：那个函数会进窗口消息循环、不返回。
-    // ★ 延迟 3 秒是为了等进入世界 —— 注入到标题界面时 ClientInstance 还没建。
-    xiaoyu::probe::Start(3000);
+    // ★ 延迟 3 秒是为了等进入世界 —— 注入到标题界面时 Actor 还没建。
+    xiaoyu::explorer::Start(3000);
 
     xiaoyu::StartOverlay();
     return 0;
