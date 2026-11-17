@@ -230,11 +230,23 @@ int FindOne(const ClassResult* r, uintptr_t* out, int max) {
 
 // ── 扫堆找实例 ──────────────────────────────────────────────────
 void FindInstances(ClassResult* results, int count) {
+    // 只扫这 4 个。其余 8 个类（Player/Actor/Mob/BlockSource/ItemStack/…）
+    // 都是继承链上的基类或叶子类型：对象的 +0 只会放**最派生类**的 vtable，
+    // 所以扫它们的 vtable 基本只会扫到栈上的临时值和 vtable 副本，
+    // 白白拖慢扫描还挤占命中名额。实测 12 个一起扫要 30 秒且命中正好
+    // 打满 2048，改成 4 个之后快了三倍。
+    static const char* kKey[] = {"ClientInstance", "LocalPlayer", "Level", "Dimension"};
+
     uint64_t needles[16];
     int map[16];
     int nc = 0;
     for (int i = 0; i < count && nc < 16; ++i) {
         if (!results[i].chain_ok) continue;
+        bool key = false;
+        for (int k = 0; k < 4; ++k) {
+            if (strcmp(results[i].name, kKey[k]) == 0) { key = true; break; }
+        }
+        if (!key) continue;
         needles[nc] = (uint64_t)results[i].vtable;
         map[nc] = i;
         ++nc;
@@ -379,6 +391,49 @@ void AnalyzeObject(const char* tag, uintptr_t inst, uintptr_t vt, int count,
     }
     if (ptrs == 0) P("     （没有直接指向已知对象的字段）");
 
+    // ④ 所有堆指针 + 它们指向对象的 vtable（不认识也照打）
+    //    枚举实体列表时要找的是容器，而容器的类型这里不一定有 RTTI，
+    //    所以不能只看"已知类型"，得把所有堆指针摊开看。
+    P("  -- 所有堆指针（含未知类型，标出对方 vtable）--");
+    int heap_ptrs = 0;
+    for (int off = 8; off < 0x900; off += 8) {
+        uintptr_t p = 0;
+        if (!mem::Read(inst + off, &p, sizeof(p))) break;
+        if (p < 0x100000000ULL || p > 0x7FFF00000000ULL) continue;   // 只要堆
+        uintptr_t pvt = 0;
+        if (!mem::Read(p, &pvt, sizeof(pvt))) continue;
+        P("     +0x%03X -> 0x%p   [vtable 0x%p]", off, (void*)p, (void*)pvt);
+        if (++heap_ptrs >= 40) {
+            P("     ...（还有更多，先列 40 个）");
+            break;
+        }
+    }
+    if (heap_ptrs == 0) P("     （没有堆指针）");
+
+    // ⑤ 容器识别：std::vector 是 begin/end/capacity 三个连续指针
+    //    （end-end 是元素数，capacity-end 是剩余空间）。三个值单调不减、
+    //    且都指向同一片堆内存，就是 vector；这通常是实体列表。
+    P("  -- 容器候选（连续三个递增指针，像 std::vector）--");
+    int vecs = 0;
+    for (int off = 8; off + 24 <= 0x900; off += 8) {
+        uintptr_t b = 0, e = 0, cap = 0;
+        if (!mem::Read(inst + off, &b, 8)) break;
+        if (!mem::Read(inst + off + 8, &e, 8)) break;
+        if (!mem::Read(inst + off + 16, &cap, 8)) break;
+        if (b < 0x100000000ULL) continue;
+        if (!(b <= e && e <= cap)) continue;
+        if (b == e && e == cap) continue;              // 空 vector 没信息量
+        if (cap - b > 0x1000000) continue;             // 明显不是
+        const size_t nn = (size_t)(e - b);
+        P("     +0x%03X  begin=0x%p end=0x%p cap=0x%p  (%zu 字节 / 每元素? )",
+          off, (void*)b, (void*)e, (void*)cap, nn);
+        if (++vecs >= 12) {
+            P("     ...（还有更多）");
+            break;
+        }
+    }
+    if (vecs == 0) P("     （没有明显的 vector）");
+
     // ④ 原始浮点视图，人工兜底
     P("  -- 前 0x180 字节的浮点视图 --");
     for (int row = 0; row < 0x180; row += 16) {
@@ -390,14 +445,6 @@ void AnalyzeObject(const char* tag, uintptr_t inst, uintptr_t vt, int count,
 }
 
 void ProbeClientInstanceFields(ClassResult* results, int count) {
-    const ClassResult* ci = nullptr;
-    const ClassResult* lp = nullptr;
-    for (int i = 0; i < count; ++i) {
-        if (!results[i].chain_ok || results[i].instance_count == 0) continue;
-        if (strcmp(results[i].name, "ClientInstance") == 0) ci = &results[i];
-        if (strcmp(results[i].name, "LocalPlayer") == 0) lp = &results[i];
-    }
-
     // 挑一个"最像真对象"的实例：地址落在堆区（栈/低地址一律排除），
     // 且 +8 是个有效指针。上一次实测里 instances[0] 是 probe 自己的
     // needles 数组（栈上），把它当 ClientInstance 分析出来全是垃圾。
@@ -413,17 +460,24 @@ void ProbeClientInstanceFields(ClassResult* results, int count) {
         return r->instance_count > 0 ? r->instances[0] : 0;
     };
 
-    if (ci == nullptr) {
-        P("\n没有 ClientInstance 实例，跳过字段探测");
-    } else {
-        const uintptr_t a = pick_real(ci);
-        if (a != 0) AnalyzeObject("ClientInstance", a, ci->vtable, count, results);
-    }
-    if (lp == nullptr) {
-        P("\n没有 LocalPlayer 实例（可能还在标题界面，没进世界）");
-    } else {
-        const uintptr_t a = pick_real(lp);
-        if (a != 0) AnalyzeObject("LocalPlayer", a, lp->vtable, count, results);
+    // 顺序有意义：ClientInstance 和 LocalPlayer 的布局已经吃透了，
+    // Level / Dimension 是拿实体列表的入口，放在后面。
+    const char* kOrder[] = {"ClientInstance", "LocalPlayer", "Level", "Dimension"};
+    for (int oi = 0; oi < 4; ++oi) {
+        const ClassResult* r = nullptr;
+        for (int i = 0; i < count; ++i) {
+            if (results[i].chain_ok && results[i].instance_count > 0 &&
+                strcmp(results[i].name, kOrder[oi]) == 0) {
+                r = &results[i];
+                break;
+            }
+        }
+        if (r == nullptr) {
+            P("\n没有 %s 实例，跳过", kOrder[oi]);
+            continue;
+        }
+        const uintptr_t a = pick_real(r);
+        if (a != 0) AnalyzeObject(kOrder[oi], a, r->vtable, count, results);
     }
 }
 
