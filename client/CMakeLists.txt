@@ -21,6 +21,7 @@ set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 #   但摘掉的决定本身是对的 —— 覆盖窗口方案和渲染方式解耦，不需要挂 Present。
 #   文件留着做参考，不参与编译。
 add_library(xiaoyu_client SHARED
+    src/bridge.cpp
     src/dllmain.cpp
     src/explorer.cpp
     src/input.cpp

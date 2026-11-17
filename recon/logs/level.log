@@ -1,0 +1,447 @@
+==============================================================================
+MultiPlayerLevel @ 0x2854EA489B0   vtable 类名 = MultiPlayerLevel
+==============================================================================
+
+--- 已知类型成员 ---
+  +0x0010 -> 0x2854F5DA810   ★ ?$_Ref_count_obj2::UControlBlock::EnableNonOwnerReferences::Bedrock::::::std
+  +0x0098 -> 0x2854F5DA590   ★ ?$_Ref_count_obj2::_N::std
+  +0x03F8 -> 0x28539BB5190   ★ ?$_Ref_count_obj2::VMapDetectionData::::::std
+  +0x0408 -> 0x285393D3D80   ★ ?$_Ref_count_obj2::UControlBlock::EnableNonOwnerReferences::Bedrock::::::std
+  +0x0410 -> 0x285395460C0   ★ LoopbackPacketSender
+  +0x0418 -> 0x2854F5DA870   ★ EnableNonOwnerReferences::Bedrock
+  +0x0430 -> 0x285620EAB00   ★ ?$_Ref_count_obj2::VActorInfoRegistry::::::std
+  +0x0460 -> 0x2854F5DA550   ★ ?$_Ref_count_obj2::UControlBlock::EnableNonOwnerReferences::Bedrock::::::std
+  +0x0518 -> 0x2854F5DA8D0   ★ ?$_Ref_count_resource::PEAVTrimPatternRegistry::::U?$default_delete::VTrimPatternRegistry::::::std::::::std
+  +0x0528 -> 0x2854F5DA950   ★ ?$_Ref_count_resource::PEAVTrimMaterialRegistry::::U?$default_delete::VTrimMaterialRegistry::::::std::::::std
+  +0x0530 -> 0x2853900CC20   ★ BedrockSpawner
+  +0x0560 -> 0x28543C28CA0   ★ BlockHashPalette
+  +0x0570 -> 0x28562086C50   ★ BlockReducer
+  +0x0588 -> 0x2854EC24DE0   ★ EnableNonOwnerReferences::Bedrock
+  +0x0590 -> 0x28546939540   ★ PortalForcer
+  +0x05A0 -> 0x2854E912CA0   ★ ?$_Ref_count_obj2::VItemRegistry::::::std
+  +0x05B0 -> 0x2852765DF90   ★ ?$_Ref_count_obj2::UControlBlock::EnableNonOwnerReferences::Bedrock::::::std
+  +0x05C0 -> 0x2854EC16640   ★ ClientUnknownBlockTypeRegistry
+  +0x05C8 -> 0x2855A872040   ★ BossEventSubscriptionManagerImpl
+  +0x05D0 -> 0x2855A7C6CE0   ★ ContainerRegistry
+  +0x05D8 -> 0x2855A7C6CD0   ★ ?$_Ref_count_obj2::VContainerRegistry::::::std
+  +0x05E0 -> 0x2854EC24A60   ★ EnableNonOwnerReferences::Bedrock
+  +0x0610 -> 0x28545B96E50   ★ LevelRandom
+  +0x0618 -> 0x28545B96E40   ★ ?$_Ref_count_obj2::VLevelRandom::::::std
+  +0x0628 -> 0x2854F4C5E20   ★ ?$_Ref_count_obj2::UControlBlock::EnableNonOwnerReferences::Bedrock::::::std
+  +0x0630 -> 0x2854DCE6E10   ★ LegacyClientNetworkHandler
+  +0x0640 -> 0x2854C8DD1E0   ★ TaskGroup
+  +0x0648 -> 0x2854C8DD340   ★ TaskGroup
+  +0x0650 -> 0x2852D84B530   ★ Scheduler
+  +0x0680 -> 0x2854EC24BA0   ★ EnableNonOwnerReferences::Bedrock
+  +0x06A0 -> 0x2852D918420   ★ MinecraftEventing
+  +0x06A8 -> 0x2854EC24BC0   ★ EnableNonOwnerReferences::Bedrock
+  +0x06B0 -> 0x2855A3D2170   ★ ClientEventCoordinatorManager
+  +0x06B8 -> 0x285583CB800   ★ LevelSoundManager
+  +0x06C8 -> 0x285399D82D0   ★ ?$_Ref_count_obj2::UControlBlock::EnableNonOwnerReferences::Bedrock::::::std
+  +0x06D0 -> 0x2852A6AFBF0   ★ StructureManager
+  +0x06D8 -> 0x2854EC249A0   ★ EnableNonOwnerReferences::Bedrock
+  +0x06F0 -> 0x2854C17E8D0   ★ BorderBlock
+  +0x06F8 -> 0x2854EC24C60   ★ EnableNonOwnerReferences::Bedrock
+  +0x0708 -> 0x2854EC24F80   ★ EnableNonOwnerReferences::Bedrock
+  +0x0728 -> 0x2852A675790   ★ ?$_Ref_count_obj2::VEntityRegistry::::::std
+  +0x0740 -> 0x285399D8690   ★ ?$_Ref_count_obj2::UControlBlock::EnableNonOwnerReferences::Bedrock::::::std
+  +0x0748 -> 0x28539504B30   ★ Minecraft
+  +0x0758 -> 0x2855A7EEFB0   ★ ?$_Ref_count_obj2::VPauseManager::::::std
+  +0x0768 -> 0x285523DF530   ★ ?$_Ref_count_obj2::VEntitySystemsManager::::::std
+  +0x0778 -> 0x2855A7EF820   ★ FeatureTypeFactory
+  +0x0788 -> 0x28558112040   ★ Random
+  +0x07E0 -> 0x2854EC25000   ★ EnableNonOwnerReferences::Bedrock
+  +0x07F0 -> 0x2854EC25620   ★ SharedController::PlayerCapabilities
+  +0x07F8 -> 0x2854EF31060   ★ BlockActorLevelListener
+  +0x0820 -> 0x2854EC25240   ★ EnableNonOwnerReferences::Bedrock
+  +0x0830 -> 0x2854EC25700   ★ EnableNonOwnerReferences::Bedrock
+  +0x0838 -> 0x2854E1F89A0   ★ ActorManager
+  +0x0840 -> 0x285620E6790   ★ ?$SubscriptionBody::$$A6AXAEAVActor::::::Z$0A::::Detail::PubSub::Bedrock
+  +0x0848 -> 0x285620E6780   ★ ?$_Ref_count_obj2::V?$SubscriptionBody::$$A6AXAEAVActor::::::Z$0A::::Detail::PubSub::Bedrock::::::std
+  +0x0850 -> 0x2854EC25500   ★ EnableNonOwnerReferences::Bedrock
+  +0x0860 -> 0x2854EC25380   ★ EnableNonOwnerReferences::Bedrock
+  +0x0870 -> 0x2854EC25360   ★ EnableNonOwnerReferences::Bedrock
+  +0x0878 -> 0x2854F5F9FC0   ★ GameplayUserManager
+  +0x0880 -> 0x2855A3D29A0   ★ ?$SubscriptionBody::$$A6AXAEAVEntityContext::::::Z$0A::::Detail::PubSub::Bedrock
+  +0x0888 -> 0x2855A3D2990   ★ ?$_Ref_count_obj2::V?$SubscriptionBody::$$A6AXAEAVEntityContext::::::Z$0A::::Detail::PubSub::Bedrock::::::std
+  +0x0890 -> 0x2855A3D2400   ★ ?$SubscriptionBody::$$A6AXAEAVEntityContext::::::Z$0A::::Detail::PubSub::Bedrock
+  +0x0898 -> 0x2855A3D23F0   ★ ?$_Ref_count_obj2::V?$SubscriptionBody::$$A6AXAEAVEntityContext::::::Z$0A::::Detail::PubSub::Bedrock::::::std
+  +0x08A0 -> 0x2855A3D1B40   ★ ?$SubscriptionBody::$$A6AXXZ$0A::::Detail::PubSub::Bedrock
+  +0x08A8 -> 0x2855A3D1B30   ★ ?$_Ref_count_obj2::V?$SubscriptionBody::$$A6AXXZ$0A::::Detail::PubSub::Bedrock::::::std
+  +0x08B0 -> 0x285583CBB10   ★ Scoreboard
+  +0x08C0 -> 0x2854BF451F0   ★ ?$_Ref_count_obj2::VMolangPackSettingsCache::::::std
+  +0x08C8 -> 0x2854EC25420   ★ EnableNonOwnerReferences::Bedrock
+  +0x08D8 -> 0x28562613270   ★ EnableNonOwnerReferences::Bedrock
+  +0x08F8 -> 0x2854EC251A0   ★ EnableNonOwnerReferences::Bedrock
+  +0x0908 -> 0x2854EC25720   ★ EnableNonOwnerReferences::Bedrock
+  +0x0918 -> 0x2854EC25960   ★ EnableNonOwnerReferences::Bedrock
+  +0x0928 -> 0x2854EC25300   ★ EnableNonOwnerReferences::Bedrock
+  +0x0930 -> 0x2854C2AA2D0   ★ ClientParticleProviderImpl::ClientParticleProvider
+  +0x0938 -> 0x2855A3D24A0   ★ ?$SubscriptionBody::$$A6AXW4ParticleType::::AEBVVec3::::1H::Z$0A::::Detail::PubSub::Bedrock
+  +0x0940 -> 0x2855A3D2490   ★ ?$_Ref_count_obj2::V?$SubscriptionBody::$$A6AXW4ParticleType::::AEBVVec3::::1H::Z$0A::::Detail::PubSub::Bedrock::::::std
+  +0x0948 -> 0x2855A3D16E0   ★ ?$SubscriptionBody::$$A6AXAEBVBlockPos::::AEBVBlock::::AEBVVec3::::MMM::Z$0A::::Detail::PubSub::Bedrock
+  +0x0950 -> 0x2855A3D16D0   ★ ?$_Ref_count_obj2::V?$SubscriptionBody::$$A6AXAEBVBlockPos::::AEBVBlock::::AEBVVec3::::MMM::Z$0A::::Detail::PubSub::Bedrock::::::std
+  +0x0958 -> 0x2855A3D2540   ★ ?$SubscriptionBody::$$A6AXAEBVBlockPos::::AEBVBlock::::AEBVVec3::::MMM::Z$0A::::Detail::PubSub::Bedrock
+  +0x0960 -> 0x2855A3D2530   ★ ?$_Ref_count_obj2::V?$SubscriptionBody::$$A6AXAEBVBlockPos::::AEBVBlock::::AEBVVec3::::MMM::Z$0A::::Detail::PubSub::Bedrock::::::std
+  +0x0968 -> 0x2855A3D2680   ★ ?$SubscriptionBody::$$A6AXAEBVVec3::::AEBUBreakingItemParticleData::::AEBUResolvedItemIconInfo::::::Z$0A::::Detail::PubSub::Bedrock
+  +0x0970 -> 0x2855A3D2670   ★ ?$_Ref_count_obj2::V?$SubscriptionBody::$$A6AXAEBVVec3::::AEBUBreakingItemParticleData::::AEBUResolvedItemIconInfo::::::Z$0A::::Detail::PubSub::Bedrock::::::std
+  +0x0998 -> 0x2855A3D1780   ★ ?$SubscriptionBody::$$A6AXAEBVHashedString::::AEBVBlockPos::::AEBVBlock::::V?$optional::VColor::mce::::::std::::::Z$0A::::Detail::PubSub::Bedrock
+  +0x09A0 -> 0x2855A3D1770   ★ ?$_Ref_count_obj2::V?$SubscriptionBody::$$A6AXAEBVHashedString::::AEBVBlockPos::::AEBVBlock::::V?$optional::VColor::mce::::::std::::::Z$0A::::Detail::PubSub::Bedrock::::::std
+  +0x09A8 -> 0x2854EC257E0   ★ EnableNonOwnerReferences::Bedrock
+  +0x09B8 -> 0x2854EC25440   ★ EnableNonOwnerReferences::Bedrock
+  +0x09C8 -> 0x2854EC253C0   ★ EnableNonOwnerReferences::Bedrock
+  +0x09D8 -> 0x2855A7C6350   ★ ReflectionCtx::cereal
+  +0x09E0 -> 0x2855A7C6340   ★ ?$_Ref_count_obj2::UReflectionCtx::cereal::::::std
+  +0x09E8 -> 0x2854EC25DE0   ★ EnableNonOwnerReferences::Bedrock
+  +0x09F0 -> 0x2854B11B390   ★ ActorFactory
+  +0x09F8 -> 0x2854EC25DC0   ★ EnableNonOwnerReferences::Bedrock
+  +0x0A08 -> 0x2854EC25F80   ★ EnableNonOwnerReferences::Bedrock
+  +0x0A18 -> 0x2854EC25AA0   ★ EnableNonOwnerReferences::Bedrock
+  +0x0A20 -> 0x2854EC25B20   ★ LevelCrashDumpManager
+  +0x0A30 -> 0x2854EEC18B0   ★ ?$_Ref_count_obj2::VUniqueIDManager::::::std
+  +0x0A38 -> 0x2855A3D13C0   ★ ?$SubscriptionBody::$$A6AXAEAVImageBuffer::cg::::PEAVActor::::1AEAUScreenshotOptions::::V?$function::$$A6AXAEAVImageBuffer::cg::::AEAUScreenshotOptions::::::Z::std::::::Z$0A
+  +0x0A40 -> 0x2855A3D13B0   ★ ?$_Ref_count_obj2::V?$SubscriptionBody::$$A6AXAEAVImageBuffer::cg::::PEAVActor::::1AEAUScreenshotOptions::::V?$function::$$A6AXAEAVImageBuffer::cg::::AEAUScreenshotOptio
+  +0x0A48 -> 0x2854EC25E20   ★ EnableNonOwnerReferences::Bedrock
+  +0x0A50 -> 0x2854A8FCA20   ★ PhotoManager
+  +0x0A58 -> 0x2854EC259A0   ★ EnableNonOwnerReferences::Bedrock
+  +0x0A60 -> 0x285492FF9A0   ★ LevelEventManager
+  +0x0A68 -> 0x285620E6B50   ★ ?$SubscriptionBody::$$A6AXW4LevelEvent::Legacy::SharedTypes::::AEBVVec3::::H::Z$0A::::Detail::PubSub::Bedrock
+  +0x0A70 -> 0x285620E6B40   ★ ?$_Ref_count_obj2::V?$SubscriptionBody::$$A6AXW4LevelEvent::Legacy::SharedTypes::::AEBVVec3::::H::Z$0A::::Detail::PubSub::Bedrock::::::std
+  +0x0A78 -> 0x285620E7B90   ★ ?$SubscriptionBody::$$A6AXW4LevelEvent::Legacy::SharedTypes::::AEBVCompoundTag::::::Z$0A::::Detail::PubSub::Bedrock
+  +0x0A80 -> 0x285620E7B80   ★ ?$_Ref_count_obj2::V?$SubscriptionBody::$$A6AXW4LevelEvent::Legacy::SharedTypes::::AEBVCompoundTag::::::Z$0A::::Detail::PubSub::Bedrock::::::std
+  +0x0A88 -> 0x2854EC26060   ★ EnableNonOwnerReferences::Bedrock
+  +0x0A98 -> 0x2854EC25FC0   ★ EnableNonOwnerReferences::Bedrock
+  +0x0AA8 -> 0x2854EC25E40   ★ EnableNonOwnerReferences::Bedrock
+  +0x0AB8 -> 0x2854EC26040   ★ EnableNonOwnerReferences::Bedrock
+  +0x0AC0 -> 0x2855A870FA0   ★ PlayerPermissionsManager
+  +0x0AC8 -> 0x2854EC25EA0   ★ EnableNonOwnerReferences::Bedrock
+  +0x0AD8 -> 0x2854EC26080   ★ EnableNonOwnerReferences::Bedrock
+  +0x0AE0 -> 0x28549594A00   ★ LevelChunkEventManager
+  +0x0AE8 -> 0x2855A3D2A40   ★ ?$SubscriptionBody::$$A6AXAEAVChunkSource::::AEAVLevelChunk::::H::Z$0A::::Detail::PubSub::Bedrock
+  +0x0AF0 -> 0x2855A3D2A30   ★ ?$_Ref_count_obj2::V?$SubscriptionBody::$$A6AXAEAVChunkSource::::AEAVLevelChunk::::H::Z$0A::::Detail::PubSub::Bedrock::::::std
+  +0x0AF8 -> 0x2855A3D2E00   ★ ?$SubscriptionBody::$$A6AXAEAVChunkSource::::AEAVLevelChunk::::::Z$0A::::Detail::PubSub::Bedrock
+  +0x0B00 -> 0x2855A3D2DF0   ★ ?$_Ref_count_obj2::V?$SubscriptionBody::$$A6AXAEAVChunkSource::::AEAVLevelChunk::::::Z$0A::::Detail::PubSub::Bedrock::::::std
+  +0x0B08 -> 0x2855A3D2B80   ★ ?$SubscriptionBody::$$A6AXAEAVLevelChunk::::::Z$0A::::Detail::PubSub::Bedrock
+  +0x0B10 -> 0x2855A3D2B70   ★ ?$_Ref_count_obj2::V?$SubscriptionBody::$$A6AXAEAVLevelChunk::::::Z$0A::::Detail::PubSub::Bedrock::::::std
+  +0x0B18 -> 0x2854EC25BE0   ★ EnableNonOwnerReferences::Bedrock
+  +0x0B28 -> 0x2854EC25C80   ★ EnableNonOwnerReferences::Bedrock
+  +0x0B38 -> 0x2854EC260E0   ★ EnableNonOwnerReferences::Bedrock
+  +0x0B50 -> 0x2855AAF2ED0   ★ ?$_Ref_count_obj2::VTickTimeManager::::::std
+  +0x0B70 -> 0x2855A29DB70   ★ ?$_Ref_count_obj2::VWeatherManager::::::std
+  +0x0B80 -> 0x2855A3D3440   ★ ?$SubscriptionBody::$$A6AXW4LowMemorySeverity::::::Z$0A::::Detail::PubSub::Bedrock
+  +0x0B88 -> 0x2855A3D3430   ★ ?$_Ref_count_obj2::V?$SubscriptionBody::$$A6AXW4LowMemorySeverity::::::Z$0A::::Detail::PubSub::Bedrock::::::std
+  +0x0BA8 -> 0x2854160A520   ★ ?$_Ref_count_obj2::VDensityFunctionRegistry::::::std
+  +0x0BB0 -> 0x2854F5DA3F0   ★ EnableNonOwnerReferences::Bedrock
+  +0x0C00 -> 0x2854EC161A0   ★ EnableNonOwnerReferences::Bedrock
+  +0x0C80 -> 0x28546D5FE20   ★ CameraRegistry
+  +0x0C88 -> 0x2855A7F1620   ★ EntitySystems
+  +0x0C90 -> 0x2855E2EE060   ★ VolumeEntityManagerClient
+  +0x0C98 -> 0x2854EC16800   ★ EnableNonOwnerReferences::Bedrock
+  +0x0CA0 -> 0x2854549D250   ★ SubChunkManager
+  +0x0CA8 -> 0x285620EB0B0   ★ ?$SubscriptionBody::$$A6AXAEAVChunkSource::::AEAVLevelChunk::::F_N::Z$0A::::Detail::PubSub::Bedrock
+  +0x0CB0 -> 0x285620EB0A0   ★ ?$_Ref_count_obj2::V?$SubscriptionBody::$$A6AXAEAVChunkSource::::AEAVLevelChunk::::F_N::Z$0A::::Detail::PubSub::Bedrock::::::std
+  +0x0CB8 -> 0x2854EC16900   ★ EnableNonOwnerReferences::Bedrock
+  +0x0CF8 -> 0x285393D3D20   ★ ?$_Ref_count_obj2::UControlBlock::EnableNonOwnerReferences::Bedrock::::::std
+  +0x0D00 -> 0x285395CA530   ★ ArmorTrimIconGenerator
+  +0x0D10 -> 0x2854EC16260   ★ EnableNonOwnerReferences::Bedrock
+  +0x0D18 -> 0x2854BC501C0   ★ MapDataManager
+  +0x1B28 -> 0x2855010C500   ★ ?$_Ref_count_obj2::VUIControl::::::std
+  +0x1B48 -> 0x28559CE26E0   ★ UIAnimationComponent
+  +0x1B68 -> 0x2854EA4A4E0   ★ ?$_Func_impl_no_alloc::V?$_Binder::U_Unforced::std::::V?$_Mem_fn::P8UIAnimationComponent::::EAA?AW4AnimationStatus::ui::::AEBUTimeStep::mce::::::Z::2::AEBQEAVUIAnimationComp
+  +0x1B78 -> 0x2855AF61D40   ★ ?$_Ref_count_obj2::VUIControl::::::std
+  +0x1B98 -> 0x285460BCC40   ★ UIAnimationComponent
+  +0x1BB8 -> 0x2854EA4A530   ★ ?$_Func_impl_no_alloc::V?$_Binder::U_Unforced::std::::V?$_Mem_fn::P8UIAnimationComponent::::EAA?AW4AnimationStatus::ui::::AEBUTimeStep::mce::::::Z::2::AEBQEAVUIAnimationComp
+  +0x1BC8 -> 0x28565924E30   ★ ?$_Ref_count_obj2::VUIControl::::::std
+  +0x1BE8 -> 0x2855A6FB530   ★ UIAnimationComponent
+  +0x1C08 -> 0x2854EA4A580   ★ ?$_Func_impl_no_alloc::V?$_Binder::U_Unforced::std::::V?$_Mem_fn::P8UIAnimationComponent::::EAA?AW4AnimationStatus::ui::::AEBUTimeStep::mce::::::Z::2::AEBQEAVUIAnimationComp
+  +0x1C18 -> 0x28565921FB0   ★ ?$_Ref_count_obj2::VUIControl::::::std
+  +0x1C38 -> 0x2855A6F5D30   ★ UIAnimationComponent
+  +0x1C58 -> 0x2854EA4A5D0   ★ ?$_Func_impl_no_alloc::V?$_Binder::U_Unforced::std::::V?$_Mem_fn::P8UIAnimationComponent::::EAA?AW4AnimationStatus::ui::::AEBUTimeStep::mce::::::Z::2::AEBQEAVUIAnimationComp
+  +0x1C68 -> 0x28565923330   ★ ?$_Ref_count_obj2::VUIControl::::::std
+  +0x1C88 -> 0x2855A6F4830   ★ UIAnimationComponent
+  +0x1CA8 -> 0x2854EA4A620   ★ ?$_Func_impl_no_alloc::V?$_Binder::U_Unforced::std::::V?$_Mem_fn::P8UIAnimationComponent::::EAA?AW4AnimationStatus::ui::::AEBUTimeStep::mce::::::Z::2::AEBQEAVUIAnimationComp
+  +0x1CB8 -> 0x28565923630   ★ ?$_Ref_count_obj2::VUIControl::::::std
+  +0x1CD8 -> 0x2855A6F5AB0   ★ UIAnimationComponent
+  +0x1CF8 -> 0x2854EA4A670   ★ ?$_Func_impl_no_alloc::V?$_Binder::U_Unforced::std::::V?$_Mem_fn::P8UIAnimationComponent::::EAA?AW4AnimationStatus::ui::::AEBUTimeStep::mce::::::Z::2::AEBQEAVUIAnimationComp
+  +0x1D08 -> 0x28565925430   ★ ?$_Ref_count_obj2::VUIControl::::::std
+  +0x1D28 -> 0x2855A6F5EB0   ★ UIAnimationComponent
+  +0x1D48 -> 0x2854EA4A6C0   ★ ?$_Func_impl_no_alloc::V?$_Binder::U_Unforced::std::::V?$_Mem_fn::P8UIAnimationComponent::::EAA?AW4AnimationStatus::ui::::AEBUTimeStep::mce::::::Z::2::AEBQEAVUIAnimationComp
+  +0x1D58 -> 0x28565924830   ★ ?$_Ref_count_obj2::VUIControl::::::std
+  +0x1D78 -> 0x2855A6F4A30   ★ UIAnimationComponent
+  +0x1D98 -> 0x2854EA4A710   ★ ?$_Func_impl_no_alloc::V?$_Binder::U_Unforced::std::::V?$_Mem_fn::P8UIAnimationComponent::::EAA?AW4AnimationStatus::ui::::AEBUTimeStep::mce::::::Z::2::AEBQEAVUIAnimationComp
+  +0x1DA8 -> 0x28565924FB0   ★ ?$_Ref_count_obj2::VUIControl::::::std
+  +0x1DC8 -> 0x2855A6F4BB0   ★ UIAnimationComponent
+  +0x1DE8 -> 0x2854EA4A760   ★ ?$_Func_impl_no_alloc::V?$_Binder::U_Unforced::std::::V?$_Mem_fn::P8UIAnimationComponent::::EAA?AW4AnimationStatus::ui::::AEBUTimeStep::mce::::::Z::2::AEBQEAVUIAnimationComp
+  +0x1DF8 -> 0x285689C5450   ★ ?$_Ref_count_obj2::VUIControl::::::std
+  +0x1E18 -> 0x2855A6F5FB0   ★ UIAnimationComponent
+  +0x1E38 -> 0x2854EA4A7B0   ★ ?$_Func_impl_no_alloc::V?$_Binder::U_Unforced::std::::V?$_Mem_fn::P8UIAnimationComponent::::EAA?AW4AnimationStatus::ui::::AEBUTimeStep::mce::::::Z::2::AEBQEAVUIAnimationComp
+  +0x1E48 -> 0x285689C4CD0   ★ ?$_Ref_count_obj2::VUIControl::::::std
+  +0x1E68 -> 0x2855A6F5C30   ★ UIAnimationComponent
+  +0x1E88 -> 0x2854EA4A800   ★ ?$_Func_impl_no_alloc::V?$_Binder::U_Unforced::std::::V?$_Mem_fn::P8UIAnimationComponent::::EAA?AW4AnimationStatus::ui::::AEBUTimeStep::mce::::::Z::2::AEBQEAVUIAnimationComp
+  +0x1E98 -> 0x2854FDE4070   ★ ?$_Ref_count_obj2::VUIControl::::::std
+  +0x1EB8 -> 0x2858A0141C0   ★ UIAnimationComponent
+  +0x1ED8 -> 0x2854EA4A850   ★ ?$_Func_impl_no_alloc::V?$_Binder::U_Unforced::std::::V?$_Mem_fn::P8UIAnimationComponent::::EAA?AW4AnimationStatus::ui::::AEBUTimeStep::mce::::::Z::2::AEBQEAVUIAnimationComp
+  +0x1EE8 -> 0x2854FDE7F70   ★ ?$_Ref_count_obj2::VUIControl::::::std
+  +0x1F08 -> 0x2858A0118C0   ★ UIAnimationComponent
+  +0x1F28 -> 0x2854EA4A8A0   ★ ?$_Func_impl_no_alloc::V?$_Binder::U_Unforced::std::::V?$_Mem_fn::P8UIAnimationComponent::::EAA?AW4AnimationStatus::ui::::AEBUTimeStep::mce::::::Z::2::AEBQEAVUIAnimationComp
+  +0x1F38 -> 0x2854FDD8AF0   ★ ?$_Ref_count_obj2::VUIControl::::::std
+  +0x1F58 -> 0x2858A0366C0   ★ UIAnimationComponent
+  +0x1F78 -> 0x2854EA4A8F0   ★ ?$_Func_impl_no_alloc::V?$_Binder::U_Unforced::std::::V?$_Mem_fn::P8UIAnimationComponent::::EAA?AW4AnimationStatus::ui::::AEBUTimeStep::mce::::::Z::2::AEBQEAVUIAnimationComp
+  +0x1F88 -> 0x2854FDDA8F0   ★ ?$_Ref_count_obj2::VUIControl::::::std
+  +0x1FA8 -> 0x2858A0365C0   ★ UIAnimationComponent
+  +0x1FC8 -> 0x2854EA4A940   ★ ?$_Func_impl_no_alloc::V?$_Binder::U_Unforced::std::::V?$_Mem_fn::P8UIAnimationComponent::::EAA?AW4AnimationStatus::ui::::AEBUTimeStep::mce::::::Z::2::AEBQEAVUIAnimationComp
+  +0x1FD8 -> 0x28553198E00   ★ ?$_Ref_count_obj2::VUIControl::::::std
+  +0x1FF8 -> 0x28559CE37E0   ★ UIAnimationComponent
+  +0x2018 -> 0x2854EA4A990   ★ ?$_Func_impl_no_alloc::V?$_Binder::U_Unforced::std::::V?$_Mem_fn::P8UIAnimationComponent::::EAA?AW4AnimationStatus::ui::::AEBUTimeStep::mce::::::Z::2::AEBQEAVUIAnimationComp
+  +0x2028 -> 0x2855AF4E3C0   ★ ?$_Ref_count_obj2::VUIControl::::::std
+  +0x2048 -> 0x285460BC440   ★ UIAnimationComponent
+  +0x2068 -> 0x2854EA4A9E0   ★ ?$_Func_impl_no_alloc::V?$_Binder::U_Unforced::std::::V?$_Mem_fn::P8UIAnimationComponent::::EAA?AW4AnimationStatus::ui::::AEBUTimeStep::mce::::::Z::2::AEBQEAVUIAnimationComp
+  +0x2078 -> 0x285659225B0   ★ ?$_Ref_count_obj2::VUIControl::::::std
+  +0x2098 -> 0x2855A6FBA30   ★ UIAnimationComponent
+  +0x20B8 -> 0x2854EA4AA30   ★ ?$_Func_impl_no_alloc::V?$_Binder::U_Unforced::std::::V?$_Mem_fn::P8UIAnimationComponent::::EAA?AW4AnimationStatus::ui::::AEBUTimeStep::mce::::::Z::2::AEBQEAVUIAnimationComp
+  +0x20C8 -> 0x2855AF62AC0   ★ ?$_Ref_count_obj2::VUIControl::::::std
+  +0x20E8 -> 0x285460BD140   ★ UIAnimationComponent
+  +0x2108 -> 0x2854EA4AA80   ★ ?$_Func_impl_no_alloc::V?$_Binder::U_Unforced::std::::V?$_Mem_fn::P8UIAnimationComponent::::EAA?AW4AnimationStatus::ui::::AEBUTimeStep::mce::::::Z::2::AEBQEAVUIAnimationComp
+  +0x2138 -> 0x285460BD140   ★ UIAnimationComponent
+  +0x2188 -> 0x285460BD140   ★ UIAnimationComponent
+  +0x21D8 -> 0x285460BD140   ★ UIAnimationComponent
+  +0x2228 -> 0x285460BD140   ★ UIAnimationComponent
+  +0x2278 -> 0x285460BD140   ★ UIAnimationComponent
+  +0x22C8 -> 0x285460BD140   ★ UIAnimationComponent
+  +0x2318 -> 0x2855A6FB4B0   ★ UIAnimationComponent
+  +0x2368 -> 0x2855A6FB4B0   ★ UIAnimationComponent
+  +0x23B8 -> 0x2855A6FB4B0   ★ UIAnimationComponent
+  +0x2408 -> 0x2855A6FB4B0   ★ UIAnimationComponent
+  +0x2458 -> 0x2855A6FB4B0   ★ UIAnimationComponent
+  +0x2888 -> 0x28580424540   ★ ?$ClientResourcePointer::V?$variant::Umonostate::std::::VBuffer::mce::::V?$ClientResourcePointer::UResolvedVertexBufferResource::dragon::::::4::V?$ClientResourcePointer::U
+  +0x2890 -> 0x28580424530   ★ ?$_Ref_count_obj2::VMesh::mce::::::std
+  +0x50E0 -> 0x28548029BB0   ★ ClientBlockData
+  +0x6760 -> 0x28541BDA8B0   ★ FontAlias
+  +0x67D8 -> 0x28541BDA8B0   ★ FontAlias
+  +0x6850 -> 0x28541BDA8B0   ★ FontAlias
+  +0x68C8 -> 0x28541BDA8B0   ★ FontAlias
+  +0x6940 -> 0x28541BDA8B0   ★ FontAlias
+  +0x69B8 -> 0x28541BDA8B0   ★ FontAlias
+  +0x6CD0 -> 0x2854EA4F648   ★ ?$_Func_impl_no_alloc::V<lambda_1>::?1??_setupControlFactoryCallbacks::ScreenView::::AEAAXXZ::XAEBV?$basic_string::DU?$char_traits::D::std::::V?$allocator::D::2::::std::::AE
+  +0x6D10 -> 0x2854EA4F688   ★ ?$_Func_impl_no_alloc::V<lambda_2>::?1??_setupControlFactoryCallbacks::ScreenView::::AEAAXXZ::XAEBV?$basic_string::DU?$char_traits::D::std::::V?$allocator::D::2::::std::::AE
+  +0x6D50 -> 0x2854EA4F6C8   ★ ?$_Func_impl_no_alloc::V<lambda_3>::?1??_setupControlFactoryCallbacks::ScreenView::::AEAAXXZ::XAEBV?$basic_string::DU?$char_traits::D::std::::V?$allocator::D::2::::std::::::s
+  +0x6DE8 -> 0x2854EA4F760   ★ ?$_Func_impl_no_alloc::V<lambda_1>::?1??_passViewCommand::ScreenView::::AEAAXXZ::XAEAUFlyingItemCommand::::::std
+  +0x6E28 -> 0x2854EA4F7A0   ★ ?$_Func_impl_no_alloc::V<lambda_2>::?1??_passViewCommand::ScreenView::::AEAAXXZ::XAEAUSelectNavigationTabCommand::::::std
+  +0x6E68 -> 0x2854EA4F7E0   ★ ?$_Func_impl_no_alloc::V<lambda_4>::?1??_passViewCommand::ScreenView::::AEAAXXZ::X$$V::std
+  +0x6EA8 -> 0x2854EA4F820   ★ ?$_Func_impl_no_alloc::V<lambda_5>::?1??_passViewCommand::ScreenView::::AEAAXXZ::X$$V::std
+  +0x6EE8 -> 0x2854EA4F860   ★ ?$_Func_impl_no_alloc::V<lambda_6>::?1??_passViewCommand::ScreenView::::AEAAXXZ::XAEBV?$basic_string::DU?$char_traits::D::std::::V?$allocator::D::2::::std::::::std
+  +0x6F28 -> 0x2854EA4F8A0   ★ ?$_Func_impl_no_alloc::V<lambda_7>::?1??_passViewCommand::ScreenView::::AEAAXXZ::XAEBV?$basic_string::DU?$char_traits::D::std::::V?$allocator::D::2::::std::::::std
+  +0x6F68 -> 0x2854EA4F8E0   ★ ?$_Func_impl_no_alloc::V<lambda_8>::?1??_passViewCommand::ScreenView::::AEAAXXZ::XAEBV?$basic_string::DU?$char_traits::D::std::::V?$allocator::D::2::::std::::_N::std
+  +0x6FA8 -> 0x2854EA4F920   ★ ?$_Func_impl_no_alloc::V<lambda_9>::?1??_passViewCommand::ScreenView::::AEAAXXZ::XAEBV?$basic_string::DU?$char_traits::D::std::::V?$allocator::D::2::::std::::::std
+  +0x6FE8 -> 0x2854EA4F960   ★ ?$_Func_impl_no_alloc::V<lambda_12>::?1??_passViewCommand::ScreenView::::AEAAXXZ::_NAEBV?$basic_string::DU?$char_traits::D::std::::V?$allocator::D::2::::std::::::std
+  +0x7028 -> 0x2854EA4F9A0   ★ ?$_Func_impl_no_alloc::V<lambda_13>::?1??_passViewCommand::ScreenView::::AEAAXXZ::_NAEBV?$basic_string::DU?$char_traits::D::std::::V?$allocator::D::2::::std::::::std
+  +0x7068 -> 0x2854EA4F9E0   ★ ?$_Func_impl_no_alloc::V<lambda_10>::?1??_passViewCommand::ScreenView::::AEAAXXZ::XAEBV?$basic_string::DU?$char_traits::D::std::::V?$allocator::D::2::::std::::_N::std
+  +0x70A8 -> 0x2854EA4FA20   ★ ?$_Func_impl_no_alloc::V<lambda_11>::?1??_passViewCommand::ScreenView::::AEAAXXZ::XAEBV?$basic_string::DU?$char_traits::D::std::::V?$allocator::D::2::::std::::::std
+  +0x70E8 -> 0x2854EA4FA60   ★ ?$_Func_impl_no_alloc::V<lambda_16>::?1??_passViewCommand::ScreenView::::AEAAXXZ::XAEBV?$basic_string::DU?$char_traits::D::std::::V?$allocator::D::2::::std::::H::std
+  +0x7128 -> 0x2854EA4FAA0   ★ ?$_Func_impl_no_alloc::V<lambda_17>::?1??_passViewCommand::ScreenView::::AEAAXXZ::_NAEBV?$basic_string::DU?$char_traits::D::std::::V?$allocator::D::2::::std::::HH::std
+  +0x7168 -> 0x2854EA4FAE0   ★ ?$_Func_impl_no_alloc::V<lambda_18>::?1??_passViewCommand::ScreenView::::AEAAXXZ::_NAEBV?$basic_string::DU?$char_traits::D::std::::V?$allocator::D::2::::std::::HAEBV45::HH::st
+  +0x71A8 -> 0x2854EA4FB20   ★ ?$_Func_impl_no_alloc::V<lambda_3>::?1??_passViewCommand::ScreenView::::AEAAXXZ::XAEBV?$basic_string::DU?$char_traits::D::std::::V?$allocator::D::2::::std::::::std
+  +0x71E8 -> 0x2854EA4FB60   ★ ?$_Func_impl_no_alloc::V<lambda_19>::?1??_passViewCommand::ScreenView::::AEAAXXZ::XAEBV?$basic_string::DU?$char_traits::D::std::::V?$allocator::D::2::::std::::AEBV45::H::std
+  +0x7228 -> 0x2854EA4FBA0   ★ ?$_Func_impl_no_alloc::V<lambda_20>::?1??_passViewCommand::ScreenView::::AEAAXXZ::X$$V::std
+  +0x7268 -> 0x2854EA4FBE0   ★ ?$_Func_impl_no_alloc::V<lambda_21>::?1??_passViewCommand::ScreenView::::AEAAXXZ::X$$V::std
+  +0x72A8 -> 0x2854EA4FC20   ★ ?$_Func_impl_no_alloc::V<lambda_22>::?1??_passViewCommand::ScreenView::::AEAAXXZ::X$$V::std
+  +0x72E8 -> 0x2854EA4FC60   ★ ?$_Func_impl_no_alloc::V<lambda_23>::?1??_passViewCommand::ScreenView::::AEAAXXZ::XM::std
+  +0x7328 -> 0x2854EA4FCA0   ★ ?$_Func_impl_no_alloc::V<lambda_24>::?1??_passViewCommand::ScreenView::::AEAAXXZ::XAEBV?$basic_string::DU?$char_traits::D::std::::V?$allocator::D::2::::std::::::std
+  +0x7450 -> 0x28550996C90   ★ HSH{(vHHÏIÿvHH;s uHötLÆè3>ÀtH;Ýt	H[ëÄLóMötM;ôtMÆHT$0IÍèçw
+  +0x7758 -> 0x2854A9C64C0   ★ TaskGroup
+  +0x7770 -> 0x2856D50EF50   ★ ?$_Ref_count_obj2::UControlBlock::EnableNonOwnerReferences::Bedrock::::::std
+  +0x7778 -> 0x2854EA4F640   ★ GameTipScreenController
+  +0x7780 -> 0x2854EA4F630   ★ ?$_Ref_count_obj2::VGameTipScreenController::::::std
+  +0x7788 -> 0x28563350CA0   ★ ClientInstanceScreenModel
+  +0x7790 -> 0x28563350C90   ★ ?$_Ref_count_obj2::VClientInstanceScreenModel::::::std
+  +0x78E0 -> 0x28563350CA0   ★ ClientInstanceScreenModel
+  +0x78E8 -> 0x28563350C90   ★ ?$_Ref_count_obj2::VClientInstanceScreenModel::::::std
+  +0x78F0 -> 0x2854DAEBE80   ★ GenericPlatformMultiplayerRestrictions
+  +0x7900 -> 0x2854C13AF40   ★ HudContainerManagerController
+  +0x7908 -> 0x2854C13AF30   ★ ?$_Ref_count_obj2::VHudContainerManagerController::::::std
+  +0x79E0 -> 0x2855A4281C0   ★ ?$SubscriptionBody::$$A6AXAEBVOption::::::Z$0A::::Detail::PubSub::Bedrock
+  +0x79E8 -> 0x2855A4281B0   ★ ?$_Ref_count_obj2::V?$SubscriptionBody::$$A6AXAEBVOption::::::Z$0A::::Detail::PubSub::Bedrock::::::std
+  +0x80D0 -> 0x2857E485970   ★ ?$_Ref_count_obj2::VFaceSortingMetaData16BitIndex::::::std
+  +0x8150 -> 0x2857E485F30   ★ ?$_Ref_count_obj2::VIndexBufferContainer::mce::::::std
+  +0x8298 -> 0x2857E4857B0   ★ ?$_Ref_count_obj2::U?$ResourceBlockTemplate::V?$variant::Umonostate::std::::VBuffer::mce::::V?$ClientResourcePointer::UResolvedVertexBufferResource::dragon::::::4::V?$Clie
+  +0x8508 -> 0x2854EA503D0   ★ ScreenController
+  +0x8510 -> 0x2854EA503C0   ★ ?$_Ref_count_obj2::VPauseScreenController::::::std
+  +0x8520 -> 0x2857D380EC0   ★ ?$_Ref_count_obj2::VUIControl::::::std
+  +0x8678 -> 0x2857D380EC0   ★ ?$_Ref_count_obj2::VUIControl::::::std
+  +0x86E8 -> 0x2857D380EC0   ★ ?$_Ref_count_obj2::VUIControl::::::std
+  +0xE1B0 -> 0x28562EE2320   ★ CompiledExpressionWithContentScope::details::Molang
+  +0xE2C0 -> 0x28562EE6720   ★ CompiledExpressionWithContentScope::details::Molang
+  +0xE3D0 -> 0x28562EE91E0   ★ CompiledExpressionWithContentScope::details::Molang
+  +0xE5B0 -> 0x2854E5DDB30   ★ CompiledExpressionWithContentScope::details::Molang
+  +0xE5F0 -> 0x2854E5DD6F0   ★ CompiledExpressionWithContentScope::details::Molang
+  +0xE630 -> 0x2854E5DD370   ★ CompiledExpressionWithContentScope::details::Molang
+  +0xEE08 -> 0x2854EA57810   ★ ?$GenericInstruction::V<lambda_110>::?CHE::??_buildProgram::ExpressionNode::details::Molang::::CA?AW4MolangCompileResult::::AEAUMolangProgramBuildState::45::PEBV345::W4M
+  +0xEE18 -> 0x2854EA57838   ★ ?$GenericInstruction::V<lambda_54>::?BCC::??_buildProgram::ExpressionNode::details::Molang::::CA?AW4MolangCompileResult::::AEAUMolangProgramBuildState::45::PEBV345::W4Mo
+  +0xEE28 -> 0x2854EA57850   ★ ?$GenericInstruction::V<lambda_58>::?BDI::??_buildProgram::ExpressionNode::details::Molang::::CA?AW4MolangCompileResult::::AEAUMolangProgramBuildState::45::PEBV345::W4Mo
+  +0xEE38 -> 0x2854EA57868   ★ ?$GenericInstruction::V<lambda_110>::?CHE::??_buildProgram::ExpressionNode::details::Molang::::CA?AW4MolangCompileResult::::AEAUMolangProgramBuildState::45::PEBV345::W4M
+  +0xEE48 -> 0x2854EA57890   ★ ?$GenericInstruction::V<lambda_46>::?OP::??_buildProgram::ExpressionNode::details::Molang::::CA?AW4MolangCompileResult::::AEAUMolangProgramBuildState::45::PEBV345::W4Mol
+  +0xEE58 -> 0x2854EA578A8   ★ ?$GenericInstruction::V<lambda_57>::?BCM::??_buildProgram::ExpressionNode::details::Molang::::CA?AW4MolangCompileResult::::AEAUMolangProgramBuildState::45::PEBV345::W4Mo
+  +0xEE68 -> 0x28538FA0E00   ★ ?$_Func_impl_no_alloc::V<lambda_16>::?2??_initializeMolangQueries::ExpressionNode::::CA_N$$QEAUExpressionQueries::::::Z::AEBUMolangScriptArg::::AEAVRenderParams::::AEBV?
+  +0xEEC0 -> 0x28538FA16C0   ★ ?$_Func_impl_no_alloc::V<lambda_2>::?2??_initializeMolangQueries::ExpressionNode::::CA_N$$QEAUExpressionQueries::::::Z::AEBUMolangScriptArg::::AEAVRenderParams::::AEBV?$
+  +0xEF80 -> 0x28562EE1DA0   ★ CompiledExpressionWithContentScope::details::Molang
+  +0xF230 -> 0x2854EA57BF0   ★ ?$_Ref_count_obj2::VActorAnimationControllerState::::::std
+  +0xFA20 -> 0x28562EE8D20   ★ CompiledExpressionWithContentScope::details::Molang
+  +0xFB30 -> 0x28562EE11E0   ★ CompiledExpressionWithContentScope::details::Molang
+  +0xFC40 -> 0x28562EE6860   ★ CompiledExpressionWithContentScope::details::Molang
+  +0xFE60 -> 0x28562EE66E0   ★ CompiledExpressionWithContentScope::details::Molang
+
+--- vector 候选（三指针 begin/end/cap）---
+  +0x00C8  begin=0x2855A7B23C0 end=0x2855A7B2440 cap=0x2855A7B2440  128 字节
+  +0x0108  begin=0x2855A7B3F50 end=0x2855A7B3FD0 cap=0x2855A7B3FD0  128 字节
+  +0x01C0  begin=0x2855A7B3920 end=0x2855A7B39A0 cap=0x2855A7B39A0  128 字节
+  +0x0210  begin=0x2855A7B3800 end=0x2855A7B3880 cap=0x2855A7B3880  128 字节
+  +0x0278  begin=0x2855A7B5030 end=0x2855A7B50B0 cap=0x2855A7B50B0  128 字节
+  +0x02B8  begin=0x2855A7B3020 end=0x2855A7B30A0 cap=0x2855A7B30A0  128 字节
+  +0x02F8  begin=0x2855A7B4C40 end=0x2855A7B4CC0 cap=0x2855A7B4CC0  128 字节
+  +0x0338  begin=0x2855A7B50C0 end=0x2855A7B5140 cap=0x2855A7B5140  128 字节
+  +0x0380  begin=0x2855A7B36E0 end=0x2855A7B3760 cap=0x2855A7B3760  128 字节
+  +0x03C8  begin=0x2855A7B3650 end=0x2855A7B36D0 cap=0x2855A7B36D0  128 字节
+  +0x0408  begin=0x285393D3D80 end=0x285395460C0 cap=0x2854F5DA870  1516352 字节
+  +0x0438  begin=0x2855232B640 end=0x2855232B6A0 cap=0x2855232B6A8  96 字节 第0个=BlockActorLevelListener
+  +0x04B0  begin=0x2855A7B4BB0 end=0x2855A7B4C30 cap=0x2855A7B4C30  128 字节
+  +0x07B8  begin=0x2854D9E98C0 end=0x2854D9E9CC0 cap=0x2854D9E9CC0  1024 字节
+  +0x0868  begin=0x2854EC25180 end=0x2854EC25360 cap=0x2854F5F9FC0  480 字节
+  +0x0A18  begin=0x2854EC25AA0 end=0x2854EC25B20 cap=0x2854EEC18C0  128 字节
+  +0x0AA0  begin=0x2854EC25DA0 end=0x2854EC25E40 cap=0x2855897B120  160 字节
+  +0x0BD8  begin=0x2855E5A4020 end=0x2855E5A40A0 cap=0x2855E5A40A0  128 字节
+  +0x0C28  begin=0x2855E5A2640 end=0x2855E5A26C0 cap=0x2855E5A26C0  128 字节
+  +0x0CF8  begin=0x285393D3D20 end=0x285395CA530 cap=0x2854EC168E0  2058256 字节
+  +0x4548  begin=0x28550954498 end=0x285509544D8 cap=0x28550954518  64 字节
+  +0x4550  begin=0x285509544D8 end=0x28550954518 cap=0x28550954568  64 字节
+  +0x4558  begin=0x28550954518 end=0x28550954568 cap=0x285509545C8  80 字节
+  +0x4560  begin=0x28550954568 end=0x285509545C8 cap=0x28550954628  96 字节
+  +0x45F8  begin=0x28550954138 end=0x28550954198 cap=0x285509549B8  96 字节
+  +0x4610  begin=0x28550954258 end=0x285509542B8 cap=0x28550954308  96 字节
+  +0x4630  begin=0x28550954358 end=0x285509543A8 cap=0x285509543F8  80 字节
+  +0x4850  begin=0x285509549C8 end=0x28550954A08 cap=0x28550954A48  64 字节
+  +0x49B8  begin=0x285509546A8 end=0x28550954708 cap=0x28550954898  96 字节
+  +0x4A78  begin=0x28550954108 end=0x28550954168 cap=0x28550954598  96 字节
+  +0x4A80  begin=0x28550954168 end=0x28550954598 cap=0x285509545F8  1072 字节
+  +0x4A88  begin=0x28550954598 end=0x285509545F8 cap=0x28550954658  96 字节
+  +0x4C18  begin=0x28550954238 end=0x28550954298 cap=0x285509542E8  96 字节
+  +0x4C20  begin=0x28550954298 end=0x285509542E8 cap=0x28550954548  80 字节
+  +0x4C28  begin=0x285509542E8 end=0x28550954548 cap=0x285509545A8  608 字节
+  +0x4C30  begin=0x28550954548 end=0x285509545A8 cap=0x28550954608  96 字节
+  +0x4C38  begin=0x285509545A8 end=0x28550954608 cap=0x28550954668  96 字节
+  +0x4F10  begin=0x285509546D8 end=0x28550954728 cap=0x285509549A8  80 字节
+  +0x4FD8  begin=0x285509542A8 end=0x28550954558 cap=0x285509545B8  688 字节
+  +0x5078  begin=0x7272720F000 end=0x7272720F002 cap=0x7272720F008  2 字节
+  +0x5080  begin=0x7272720F002 end=0x7272720F008 cap=0x7272720F020  6 字节
+  +0x6E00  begin=0x285507CD730 end=0x285507CD770 cap=0x285507CD7C0  64 字节
+  +0x6E08  begin=0x285507CD770 end=0x285507CD7C0 cap=0x285507CD820  80 字节
+  +0x6E10  begin=0x285507CD7C0 end=0x285507CD820 cap=0x285507CD880  96 字节
+  +0x6EC0  begin=0x285507CD4B0 end=0x285507CD510 cap=0x285507CD560  96 字节
+  +0x7350  begin=0x28576A2A090 end=0x28576A2A110 cap=0x28576A2A110  128 字节
+  +0x7390  begin=0x28576A2A120 end=0x28576A2A1A0 cap=0x28576A2A1A0  128 字节
+  +0x73D0  begin=0x28576A2DE70 end=0x28576A2DEF0 cap=0x28576A2DEF0  128 字节
+  +0x7450  begin=0x28550996C90 end=0x28550996CD0 cap=0x28550996CD0  64 字节
+  +0x7498  begin=0x28576A2CB50 end=0x28576A2CBD0 cap=0x28576A2CBD0  128 字节
+  +0x74D8  begin=0x28576A2D7B0 end=0x28576A2D830 cap=0x28576A2D830  128 字节
+  +0x7518  begin=0x28576A2C9A0 end=0x28576A2CA20 cap=0x28576A2CA20  128 字节
+  +0x7570  begin=0x28576A2D180 end=0x28576A2D200 cap=0x28576A2D200  128 字节
+  +0x75B0  begin=0x28576A2D3C0 end=0x28576A2D440 cap=0x28576A2D440  128 字节
+  +0x75F0  begin=0x28576A2D330 end=0x28576A2D3B0 cap=0x28576A2D3B0  128 字节
+  +0x7630  begin=0x28576A2C370 end=0x28576A2C3F0 cap=0x28576A2C3F0  128 字节
+  +0x7670  begin=0x28576A2D450 end=0x28576A2D4D0 cap=0x28576A2D4D0  128 字节
+  +0x76B0  begin=0x28576A2BE60 end=0x28576A2BEE0 cap=0x28576A2BEE0  128 字节
+  +0x76F0  begin=0x28576A2D4E0 end=0x28576A2D560 cap=0x28576A2D560  128 字节
+  +0x7730  begin=0x28576A2BDD0 end=0x28576A2BE50 cap=0x28576A2BE50  128 字节
+  +0x77C0  begin=0x285507CD930 end=0x285507CD980 cap=0x285507CDC00  80 字节
+  +0x7870  begin=0x28576A2DDE0 end=0x28576A2DE60 cap=0x28576A2DE60  128 字节
+  +0x78B0  begin=0x28576A2D690 end=0x28576A2D710 cap=0x28576A2D710  128 字节
+  +0x7990  begin=0x28576A2D720 end=0x28576A2D7A0 cap=0x28576A2D7A0  128 字节
+  +0xE1C0  begin=0x28564F319C0 end=0x28564F31C40 cap=0x28564F31CE0  640 字节
+  +0xE2D0  begin=0x28543D61E50 end=0x28543D61FE0 cap=0x28543D61FE0  400 字节
+  +0xE3E0  begin=0x2853DD79ED0 end=0x2853DD7A150 cap=0x2853DD7A150  640 字节
+  +0xE4C8  begin=0x2854DF3EF20 end=0x2854DF3EF60 cap=0x2854DF3EF60  64 字节
+  +0xE528  begin=0x28543D1AC20 end=0x28543D1AEC0 cap=0x28543D1AEF8  672 字节
+  +0xE560  begin=0x28560018E50 end=0x28560018E60 cap=0x28560018E60  16 字节
+  +0xE568  begin=0x28560018E60 end=0x28560018E60 cap=0x9000040047B06336  0 字节
+  +0xE700  begin=0x2854F2E0A70 end=0x2854F2E0AE8 cap=0x2854F2E0AE8  120 字节
+  +0xE748  begin=0x2854E5DCF70 end=0x2854E5DCFA8 cap=0x2854E5DCFA8  56 字节
+  +0xE7F8  begin=0x2854DF23B80 end=0x2854DF23BC0 cap=0x2854DF23BC0  64 字节
+  +0xE908  begin=0x2854DF23F40 end=0x2854DF23F80 cap=0x2854DF23F80  64 字节
+  +0xE968  begin=0x2854F2E0D70 end=0x2854F2E0DE0 cap=0x2854F2E0DE0  112 字节
+  +0xEA18  begin=0x2854DF23720 end=0x2854DF23760 cap=0x2854DF23760  64 字节
+  +0xEB28  begin=0x2854DF24170 end=0x2854DF241B0 cap=0x2854DF241B0  64 字节
+  +0xEC98  begin=0x2854E5DCFB0 end=0x2854E5DCFE8 cap=0x2854E5DCFE8  56 字节
+  +0xED48  begin=0x2854DF3E480 end=0x2854DF3E4C0 cap=0x2854DF3E4C0  64 字节
+  +0xEDA8  begin=0x28543D1BD60 end=0x28543D1C000 cap=0x28543D1C038  672 字节
+  +0xEDE0  begin=0x28560018C50 end=0x28560018C60 cap=0x28560018C60  16 字节
+  +0xEDE8  begin=0x28560018C60 end=0x28560018C60 cap=0x88000C00472862BE  0 字节
+  +0xEF90  begin=0x28564F31690 end=0x28564F319B0 cap=0x28564F319B0  800 字节
+  +0xF078  begin=0x2854DF1F030 end=0x2854DF1F070 cap=0x2854DF1F070  64 字节
+  +0xF0D8  begin=0x28543D1C8E0 end=0x28543D1CB80 cap=0x28543D1CBB8  672 字节
+  +0xF110  begin=0x28560018A30 end=0x28560018A40 cap=0x28560018A40  16 字节
+  +0xF118  begin=0x28560018A40 end=0x28560018A40 cap=0x90000F0046FB6269  0 字节
+  +0xF298  begin=0x2854DF242B0 end=0x2854DF242F0 cap=0x2854DF242F0  64 字节
+  +0xF2F8  begin=0x2854E5E03F0 end=0x2854E5E0428 cap=0x2854E5E0428  56 字节
+  +0xF300  begin=0x2854E5E0428 end=0x2854E5E0428 cap=0x28553078310  0 字节
+  +0xF310  begin=0x28553078310 end=0x28553078370 cap=0x28553078370  96 字节
+  +0xF330  begin=0x28560015AD0 end=0x28560015AE0 cap=0x28560015AE0  16 字节
+  +0xF338  begin=0x28560015AE0 end=0x28560015AE0 cap=0x8800110046DD620B  0 字节
+  +0xF408  begin=0x2854E5E0EB0 end=0x2854E5E0EE8 cap=0x2854E5E0EE8  56 字节
+  +0xF4B8  begin=0x2854DF24FD0 end=0x2854DF25010 cap=0x2854DF25010  64 字节
+  +0xF518  begin=0x2854E5E09F0 end=0x2854E5E0A28 cap=0x2854E5E0A28  56 字节
+  +0xF520  begin=0x2854E5E0A28 end=0x2854E5E0A28 cap=0x28553077F90  0 字节
+  +0xF530  begin=0x28553077F90 end=0x28553077FF0 cap=0x28553077FF0  96 字节
+  +0xF5C8  begin=0x2854C88FAB0 end=0x2854C88FB30 cap=0x2854C88FB30  128 字节
+  +0xF628  begin=0x2854F2E0570 end=0x2854F2E05E0 cap=0x2854F2E05E0  112 字节
+  +0xF660  begin=0x28560015B30 end=0x28560015B40 cap=0x28560015B40  16 字节
+  +0xF668  begin=0x28560015B40 end=0x28560015B40 cap=0x8800140046A06DC6  0 字节
+  +0xF738  begin=0x2854F2E06F0 end=0x2854F2E0760 cap=0x2854F2E0760  112 字节
+  +0xF7E8  begin=0x2854EA59F00 end=0x2854EA5A000 cap=0x2854EA5A000  256 字节
+  +0xF848  begin=0x2854E5DE030 end=0x2854E5DE068 cap=0x2854E5DE068  56 字节
+  +0xF958  begin=0x2854F2E14F0 end=0x2854F2E1560 cap=0x2854F2E1560  112 字节
+  +0xFA30  begin=0x2854E567B90 end=0x2854E567E10 cap=0x2854E567E10  640 字节
+  +0xFB40  begin=0x28564F329B0 end=0x28564F32CD0 cap=0x28564F32CD0  800 字节
+  +0xFC50  begin=0x2855068EEB0 end=0x2855068EEB0 cap=0x2855068EF00  0 字节
+  +0xFD38  begin=0x2854DF3BF00 end=0x2854DF3BF40 cap=0x2854DF3BF40  64 字节
+  +0xFD98  begin=0x28543D1A660 end=0x28543D1A900 cap=0x28543D1A938  672 字节
+  +0xFDD0  begin=0x28560018BB0 end=0x28560018BC0 cap=0x28560018BC0  16 字节
+  +0xFDD8  begin=0x28560018BC0 end=0x28560018BC0 cap=0x90001B0046376DBD  0 字节
+  +0xFE70  begin=0x2854E5669A0 end=0x2854E566C20 cap=0x2854E566C20  640 字节
+  +0xFF58  begin=0x2854EA56F30 end=0x2854EA57030 cap=0x2854EA57030  256 字节
+  +0xFFB8  begin=0x2854E5DDBB0 end=0x2854E5DDBE8 cap=0x2854E5DDBE8  56 字节
+
+--- 直接等于 LocalPlayer 的字段 ---
+
+--- Level 里前 32 个堆指针（含未知类型，看 vtable）---
+  +0x0008 -> 0x2854F5DA820   [vt=0x1F6000000000001 ?]
+  +0x0010 -> 0x2854F5DA810   [vt=0x7FF6AACF4980 ?$_Ref_count_obj2::UControlBlock::EnableNonOwnerReferences::Bedrock::::::std]
+  +0x0018 -> 0x7FF6AAFB9AB0   [vt=0x7FF6A4C4E6F0 ?]
+  +0x0020 -> 0x7FF6AAFB9B10   [vt=0x7FF6A4C4E700 ?]
+  +0x0090 -> 0x2854F5DA5A0   [vt=0x1C050400FFFFFF01 ?]
+  +0x0098 -> 0x2854F5DA590   [vt=0x7FF6AAE49270 ?$_Ref_count_obj2::_N::std]
+  +0x00B8 -> 0x28541608420   [vt=0x28541608420 ?]
+  +0x00C8 -> 0x2855A7B23C0   [vt=0x28541608420 ?]
+  +0x00D0 -> 0x2855A7B2440   [vt=0x0 ?]
+  +0x00D8 -> 0x2855A7B2440   [vt=0x0 ?]
+  +0x00F8 -> 0x2854C72CE60   [vt=0x2854C72CE60 ?]
+  +0x0108 -> 0x2855A7B3F50   [vt=0x2854C72CE60 ?]
+  +0x0110 -> 0x2855A7B3FD0   [vt=0x0 ?]
+  +0x0118 -> 0x2855A7B3FD0   [vt=0x0 ?]
+  +0x01B0 -> 0x2855887CA10   [vt=0x2855887CA10 ?]
+  +0x01C0 -> 0x2855A7B3920   [vt=0x2855887CA10 ?]
+  +0x01C8 -> 0x2855A7B39A0   [vt=0x0 ?]
+  +0x01D0 -> 0x2855A7B39A0   [vt=0x0 ?]
+  +0x01E8 -> 0x285523DED10   [vt=0x3F800000 ?]
+  +0x0200 -> 0x2854C72C520   [vt=0x2854C72C520 ?]
+  +0x0210 -> 0x2855A7B3800   [vt=0x2854C72C520 ?]
+  +0x0218 -> 0x2855A7B3880   [vt=0x0 ?]
+  +0x0220 -> 0x2855A7B3880   [vt=0x0 ?]
+  +0x0268 -> 0x2854C72C760   [vt=0x2854C72C760 ?]
+  +0x0278 -> 0x2855A7B5030   [vt=0x2854C72C760 ?]
+  +0x0280 -> 0x2855A7B50B0   [vt=0x0 ?]
+  +0x0288 -> 0x2855A7B50B0   [vt=0x0 ?]
+  +0x02A8 -> 0x2854C72D120   [vt=0x2854C72D120 ?]
+  +0x02B8 -> 0x2855A7B3020   [vt=0x2854C72D120 ?]
+  +0x02C0 -> 0x2855A7B30A0   [vt=0x0 ?]
+  +0x02C8 -> 0x2855A7B30A0   [vt=0x0 ?]
+  +0x02E8 -> 0x2854C72CDA0   [vt=0x2854C72CDA0 ?]
+  ...

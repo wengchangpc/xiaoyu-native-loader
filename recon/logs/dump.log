@@ -1,0 +1,46 @@
+main module : Minecraft.Windows.exe
+path        : C:\MCLDownload\MinecraftBENetease\x64_mc\Minecraft.Windows.exe
+base        : 0x7FF6A22E0000  size_on_disk_list=0xD8F9000
+machine     : 0x8664  sections=14
+entry RVA   : 0xD061058   (runtime 0x7FF6AF341058)
+image base  : 0x7FF6A22E0000  size_of_image=0xD8F9000 (217.0MB)
+
+--- sections (from runtime header) ---
+  [ 0]            va=0x00001000 vsize=0x088E2057 ent=0.00
+  [ 1]            va=0x088E4000 vsize=0x01D8129E ent=0.00
+  [ 2]            va=0x0A666000 vsize=0x013A76C0 ent=0.00
+  [ 3]            va=0x0BA0E000 vsize=0x00529500 ent=0.00
+  [ 4]            va=0x0BF38000 vsize=0x0000EAE0 ent=0.00
+  [ 5]            va=0x0BF47000 vsize=0x00042638 ent=0.00
+  [ 6]            va=0x0BF8A000 vsize=0x0014D75C ent=0.00
+  [ 7] .edata     va=0x0C0D8000 vsize=0x00001000 ent=0.00
+  [ 8] .idata     va=0x0C0D9000 vsize=0x00001A00 ent=0.00
+  [ 9] .tls       va=0x0C0DB000 vsize=0x00007000 ent=0.00
+  [10] .rsrc      va=0x0C0E2000 vsize=0x00042800 ent=0.00
+  [11] .winlice   va=0x0C125000 vsize=0x00F3C000 ent=0.00
+  [12] .boot      va=0x0D061000 vsize=0x00896600 ent=0.00
+  [13] .reloc     va=0x0D8F8000 vsize=0x00001000 ent=0.00
+
+--- reading 217.0MB ---
+  committed readable : 217.0MB
+  unreadable(noacc)  : 0.0MB
+  free/guard         : 0.0MB
+  page retries       : 0
+
+--- runtime entropy per section ---
+             va=0x00001000 vsize=0x088E2057  entropy=6.883  PLAINTEXT?
+             va=0x088E4000 vsize=0x01D8129E  entropy=5.289  PLAINTEXT?
+             va=0x0A666000 vsize=0x013A76C0  entropy=4.986  PLAINTEXT?
+             va=0x0BA0E000 vsize=0x00529500  entropy=6.485  PLAINTEXT?
+             va=0x0BF38000 vsize=0x0000EAE0  entropy=6.609  PLAINTEXT?
+             va=0x0BF47000 vsize=0x00042638  entropy=6.040  PLAINTEXT?
+             va=0x0BF8A000 vsize=0x0014D75C  entropy=5.440  PLAINTEXT?
+  .edata     va=0x0C0D8000 vsize=0x00001000  entropy=2.350  PLAINTEXT?
+  .idata     va=0x0C0D9000 vsize=0x00001A00  entropy=4.776  PLAINTEXT?
+  .tls       va=0x0C0DB000 vsize=0x00007000  entropy=0.020  PLAINTEXT?
+  .rsrc      va=0x0C0E2000 vsize=0x00042800  entropy=6.040  PLAINTEXT?
+  .winlice   va=0x0C125000 vsize=0x00F3C000  entropy=5.801  PLAINTEXT?
+  .boot      va=0x0D061000 vsize=0x00896600  entropy=7.958  packed/encrypted
+  .reloc     va=0x0D8F8000 vsize=0x00001000  entropy=1.299  PLAINTEXT?
+
+wrote C:\Xiaoyu\dump\Minecraft.Windows.dump.exe (217.0MB)  sections_valid=14

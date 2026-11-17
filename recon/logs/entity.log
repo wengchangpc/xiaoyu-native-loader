@@ -1,0 +1,383 @@
+==============================================================================
+第 0 步：锚点自检
+==============================================================================
+  LocalPlayer      @ 0x28562A63460  pos=(-88.518798828125, 19.620014190673828, -47.545997619628906)
+  ActorManager     @ 0x2854E1F89A0  class=ActorManager
+  MultiPlayerLevel @ 0x2854EA489B0  class=MultiPlayerLevel
+  LocalPlayer+0xDE8 -> 0x28545ABBEF0  class=BlockSource
+
+==============================================================================
+第 1 步：ActorManager @ 0x2854E1F89A0 里的已识别类型成员
+==============================================================================
+  +0x0020 -> 0x285588807F0   ClientActorManagerProxy
+  +0x0030 -> 0x2854EC25780   ?$_Ref_count_obj2::UControlBlock::EnableNonOwnerReference...
+  +0x01C8 -> 0x285620E7230   ?$SubscriptionBody::$$A6AXAEAVLevelChunk::::::Z$0A::::Det...
+  +0x01D0 -> 0x285620E7220   ?$_Ref_count_obj2::V?$SubscriptionBody::$$A6AXAEAVLevelCh...
+  +0x0250 -> 0x28561E85A20   ?$_Ref_count_obj2::V?$basic_string::DU?$char_traits::D::s...
+  +0x0430 -> 0x28561F22600   ?$_Ref_count_obj2::V?$basic_string::DU?$char_traits::D::s...
+  +0x0610 -> 0x28561F24000   ?$_Ref_count_obj2::V?$basic_string::DU?$char_traits::D::s...
+  +0x0980 -> 0x2852A2E7320   ?$_Ref_count_resource::PEAVPack::::U?$default_delete::VPa...
+  +0x0B60 -> 0x2853E3303D0   ?$_Ref_count_resource::PEAVPack::::U?$default_delete::VPa...
+  +0x0D40 -> 0x2853DF39AC0   ?$_Ref_count_resource::PEAVPack::::U?$default_delete::VPa...
+  +0x0F20 -> 0x2853DF39F60   ?$_Ref_count_resource::PEAVPack::::U?$default_delete::VPa...
+  +0x12E0 -> 0x2853E442760   ?$_Ref_count_resource::PEAVPack::::U?$default_delete::VPa...
+  +0x18D0 -> 0x2854C733C20   ?$_Ref_count_obj2::V?$basic_string::DU?$char_traits::D::s...
+  +0x1C90 -> 0x2855EBC56B0   ?$_Ref_count_obj2::V?$basic_string::DU?$char_traits::D::s...
+  +0x1E70 -> 0x2855EBC55F0   ?$_Ref_count_obj2::V?$basic_string::DU?$char_traits::D::s...
+  +0x2050 -> 0x2855EBC7DF0   ?$_Ref_count_obj2::V?$basic_string::DU?$char_traits::D::s...
+  +0x2230 -> 0x28561E7C020   ?$_Ref_count_obj2::V?$basic_string::DU?$char_traits::D::s...
+  +0x2410 -> 0x28561E833A0   ?$_Ref_count_obj2::V?$basic_string::DU?$char_traits::D::s...
+  +0x25F0 -> 0x28561F24640   ?$_Ref_count_obj2::V?$basic_string::DU?$char_traits::D::s...
+  +0x30E0 -> 0x2853E442800   ?$_Ref_count_resource::PEAVPack::::U?$default_delete::VPa...
+  +0x34A0 -> 0x2853E441E40   ?$_Ref_count_resource::PEAVPack::::U?$default_delete::VPa...
+  +0x3C20 -> 0x2853E442320   ?$_Ref_count_resource::PEAVPack::::U?$default_delete::VPa...
+
+==============================================================================
+第 2 步：ActorManager 里的 unordered_map（MSVC list head 特征）
+==============================================================================
+  判据：head 的 _Next 指向一个 node，而 node 的 _Prev 指回 head
+  +0x0048  head=0x285620E81D8  first_node=0x2854E1F89E8
+  +0x0050  head=0x285620E81D8  first_node=0x2854E1F89E8
+  +0x00C8  head=0x2855A3D1A08  first_node=0x2854E1F8A68
+  +0x00D0  head=0x2855A3D1A08  first_node=0x2854E1F8A68
+  +0x0148  head=0x2855A3D3268  first_node=0x2855A3D1BE8
+  +0x0150  head=0x285620E74B8  first_node=0x2854E1F8AE8
+  +0x0818  head=0x2854E1F60F8  first_node=0x2854E1F9B18
+  +0x0820  head=0x2854E1FB378  first_node=0x2854E1F91B8
+  +0x1178  head=0x2854E1F6FF8  first_node=0x28546338EA8
+  +0x1180  head=0x2854E1F60F8  first_node=0x2854E1F9B18
+  +0x14E0  head=0x285632E0190  first_node=0x285632DF2E0
+  +0x1688  head=0x2854E1FC1E0  first_node=0x2854E1FA3E0
+  +0x16F0  head=0x2855268F910  first_node=0x28562DFF250
+  +0x1A48  head=0x2854E1FC1E0  first_node=0x2854E1FA3E0
+  +0x1A80  head=0x285632DF380  first_node=0x285632DFDD0
+  +0x2760  head=0x2854E1FE940  first_node=0x2854E1FE3A0
+  +0x2768  head=0x2854E1FD0E0  first_node=0x2854E1F7140
+  +0x27A0  head=0x285632DF240  first_node=0x285632DF560
+  +0x29D8  head=0x2854E1F91B8  first_node=0x2854E1F60F8
+  +0x29E0  head=0x28546339468  first_node=0x2854E1FB378
+  +0x2EE8  head=0x2854E1F9E40  first_node=0x2854E1F8040
+  +0x32A8  head=0x2854E1F9E40  first_node=0x2854E1F8040
+  +0x32E0  head=0x285632DF740  first_node=0x285632E0460
+  +0x3668  head=0x2854E1FB100  first_node=0x2854E1FE940
+  +0x36A0  head=0x285632DFD80  first_node=0x285632DF5B0
+  +0x3840  head=0x2854E1FA3E0  first_node=0x2854E1F67E0
+  +0x3850  head=0x2854E1FD0E0  first_node=0x2854E1F7140
+  +0x3880  head=0x285632DF0B0  first_node=0x285632DF600
+  +0x3A28  head=0x2854E1FA3E0  first_node=0x2854E1F67E0
+  +0x3A60  head=0x285632E0050  first_node=0x285632DF100
+  +0x3DE8  head=0x2854E1F7140  first_node=0x2854E1FC780
+  +0x3E20  head=0x285632E01E0  first_node=0x285632E0230
+  +0x3FC8  head=0x2854E1FED00  first_node=0x2854E1FE1C0
+
+  ── 遍历 +0x0048 的链表 ──
+     [  0] key=0x0000000000000001 value=0x2 class=None
+     共 1 个节点，其中 0 个通过 Actor 坐标验证
+
+  ── 遍历 +0x0050 的链表 ──
+     [  0] key=0x0000000000000001 value=0x2 class=None
+     共 1 个节点，其中 0 个通过 Actor 坐标验证
+
+  ── 遍历 +0x00C8 的链表 ──
+     [  0] key=0x0000000000000001 value=0x2 class=None
+     共 1 个节点，其中 0 个通过 Actor 坐标验证
+
+  ── 遍历 +0x00D0 的链表 ──
+     [  0] key=0x0000000000000001 value=0x2 class=None
+     共 1 个节点，其中 0 个通过 Actor 坐标验证
+
+  ── 遍历 +0x0148 的链表 ──
+     [  0] key=0x000002855A3D1BE0 value=0x2855A3D1BD0 class=?$_Ref_count_obj2::V?$SubscriptionBody::$$A6AXAEAVActor::...
+     [  1] key=0x00000285620E6790 value=0x285620E6780 class=?$_Ref_count_obj2::V?$SubscriptionBody::$$A6AXAEAVActor::...
+     [  2] key=0x00000285620E7C30 value=0x285620E7C20 class=?$_Ref_count_obj2::V?$SubscriptionBody::$$A6AXAEAVActor::...
+     [  3] key=0x00000285620E74B0 value=0x285620E74A0 class=?$_Ref_count_obj2::V?$SubscriptionBody::$$A6AXAEAVActor::...
+     [  4] key=0x0000000000000005 value=0x2 class=None
+     共 5 个节点，其中 0 个通过 Actor 坐标验证
+
+  ── 遍历 +0x0150 的链表 ──
+     [  0] key=0x0000000000000005 value=0x2 class=None
+     [  1] key=0x000002855A3D3260 value=0x2855A3D3250 class=?$_Ref_count_obj2::V?$SubscriptionBody::$$A6AXAEAVActor::...
+     [  2] key=0x000002855A3D1BE0 value=0x2855A3D1BD0 class=?$_Ref_count_obj2::V?$SubscriptionBody::$$A6AXAEAVActor::...
+     [  3] key=0x00000285620E6790 value=0x285620E6780 class=?$_Ref_count_obj2::V?$SubscriptionBody::$$A6AXAEAVActor::...
+     [  4] key=0x00000285620E7C30 value=0x285620E7C20 class=?$_Ref_count_obj2::V?$SubscriptionBody::$$A6AXAEAVActor::...
+     共 5 个节点，其中 0 个通过 Actor 坐标验证
+
+  ── 遍历 +0x0818 的链表 ──
+     [  0] key=0x0000000000000001 value=0x7FFA21EFC00F class=None
+     [  1] key=0x0000000000000001 value=0x7FFA21EFC00F class=None
+     [  2] key=0x0000000000000000 value=0x7FFA1F801D79 class=None
+     [  3] key=0x0000000000000000 value=0x7FFA1F801D79 class=None
+     [  4] key=0x0000000000000000 value=0x7FFA1F801D79 class=None
+     [  5] key=0x0000000000000000 value=0x7FFA1F801D79 class=None
+     [  6] key=0x0000000000000000 value=0x7FFA1F801D79 class=None
+     [  7] key=0x0000000000000000 value=0x7FFA1F801D79 class=None
+     共 71 个节点，其中 0 个通过 Actor 坐标验证
+
+  ── 遍历 +0x0820 的链表 ──
+     [  0] key=0x0000000000000001 value=0x7FFA21EFC00F class=None
+     [  1] key=0x0000000000000001 value=0x7FFA21EFC00F class=None
+     [  2] key=0x0000000000000001 value=0x7FFA21EFC00F class=None
+     [  3] key=0x0000000000000001 value=0x7FFA21EFC00F class=None
+     [  4] key=0x0000000000000000 value=0x7FFA1F801D79 class=None
+     [  5] key=0x0000000000000000 value=0x7FFA1F801D79 class=None
+     [  6] key=0x0000000000000000 value=0x7FFA1F801D79 class=None
+     [  7] key=0x0000000000000000 value=0x7FFA1F801D79 class=None
+     共 71 个节点，其中 0 个通过 Actor 坐标验证
+
+  ── 遍历 +0x1178 的链表 ──
+     [  0] key=0x0000000000000000 value=0x7FFA1F801D79 class=None
+     [  1] key=0x0000000000000000 value=0x7FFA1F801D79 class=None
+     [  2] key=0x0000000000000000 value=0x7FFA1F801D79 class=None
+     [  3] key=0x0000000000000000 value=0x7FFA1F801D79 class=None
+     [  4] key=0x0000000000000000 value=0x7FFA1F801D79 class=None
+     [  5] key=0x0000000000000000 value=0x7FFA1F801D79 class=None
+     [  6] key=0x0000000000000000 value=0x7FFA1F801D79 class=None
+     [  7] key=0x0000000000000000 value=0x7FFA1F801D79 class=None
+     共 71 个节点，其中 0 个通过 Actor 坐标验证
+
+  ── 遍历 +0x1180 的链表 ──
+     [  0] key=0x0000000000000001 value=0x7FFA21EFC00F class=None
+     [  1] key=0x0000000000000001 value=0x7FFA21EFC00F class=None
+     [  2] key=0x0000000000000000 value=0x7FFA1F801D79 class=None
+     [  3] key=0x0000000000000000 value=0x7FFA1F801D79 class=None
+     [  4] key=0x0000000000000000 value=0x7FFA1F801D79 class=None
+     [  5] key=0x0000000000000000 value=0x7FFA1F801D79 class=None
+     [  6] key=0x0000000000000000 value=0x7FFA1F801D79 class=None
+     [  7] key=0x0000000000000000 value=0x7FFA1F801D79 class=None
+     共 71 个节点，其中 0 个通过 Actor 坐标验证
+
+  ── 遍历 +0x14E0 的链表 ──
+     [  0] key=0x00000285632E0190 value=0x1 class=None
+     共 1 个节点，其中 0 个通过 Actor 坐标验证
+
+  ── 遍历 +0x1688 的链表 ──
+     [  0] key=0x000002854E1FC3C0 value=0x1 class=None
+     [  1] key=0x000002854E1FA020 value=0x1 class=None
+     [  2] key=0x000002854E1FC000 value=0x101 class=None
+     [  3] key=0x000002854E1FA020 value=0x1 class=None
+     [  4] key=0x000002854E1FC000 value=0x101 class=None
+     [  5] key=0x000002854E1FA020 value=0x1 class=None
+     [  6] key=0x000002854E1FC000 value=0x101 class=None
+     [  7] key=0x000002854E1FA020 value=0x1 class=None
+     共 4096 个节点，其中 0 个通过 Actor 坐标验证
+
+  ── 遍历 +0x16F0 的链表 ──
+     [  0] key=0x000002854C72C320 value=0x6562616C5F640001 class=None
+     [  1] key=0x0000028562DF1DD0 value=0x62616C735F720101 class=None
+     [  2] key=0x0000028562D694F0 value=0x1 class=None
+     [  3] key=0x0000028562DF1DD0 value=0x62616C735F720101 class=None
+     [  4] key=0x0000028562D694F0 value=0x1 class=None
+     [  5] key=0x0000028562DF1DD0 value=0x62616C735F720101 class=None
+     [  6] key=0x0000028562D694F0 value=0x1 class=None
+     [  7] key=0x0000028562DF1DD0 value=0x62616C735F720101 class=None
+     共 4096 个节点，其中 0 个通过 Actor 坐标验证
+
+  ── 遍历 +0x1A48 的链表 ──
+     [  0] key=0x000002854E1FC3C0 value=0x1 class=None
+     [  1] key=0x000002854E1FA020 value=0x1 class=None
+     [  2] key=0x000002854E1FC000 value=0x101 class=None
+     [  3] key=0x000002854E1FA020 value=0x1 class=None
+     [  4] key=0x000002854E1FC000 value=0x101 class=None
+     [  5] key=0x000002854E1FA020 value=0x1 class=None
+     [  6] key=0x000002854E1FC000 value=0x101 class=None
+     [  7] key=0x000002854E1FA020 value=0x1 class=None
+     共 4096 个节点，其中 0 个通过 Actor 坐标验证
+
+  ── 遍历 +0x1A80 的链表 ──
+     [  0] key=0x00000285632DF380 value=0x1200000001 class=None
+     共 1 个节点，其中 0 个通过 Actor 坐标验证
+
+  ── 遍历 +0x2760 的链表 ──
+     [  0] key=0x000002854E1FA020 value=0x800824004FC90001 class=None
+     [  1] key=0x000002854E1FC000 value=0x101 class=None
+     [  2] key=0x000002854E1FA020 value=0x1 class=None
+     [  3] key=0x000002854E1FC000 value=0x101 class=None
+     [  4] key=0x000002854E1FA020 value=0x1 class=None
+     [  5] key=0x000002854E1FC000 value=0x101 class=None
+     [  6] key=0x000002854E1FA020 value=0x1 class=None
+     [  7] key=0x000002854E1FC000 value=0x101 class=None
+     共 4096 个节点，其中 0 个通过 Actor 坐标验证
+
+  ── 遍历 +0x2768 的链表 ──
+     [  0] key=0x000002854E1FED00 value=0x1 class=None
+     [  1] key=0x000002854E1FA020 value=0x1 class=None
+     [  2] key=0x000002854E1FA020 value=0x800860004F850000 class=None
+     [  3] key=0x000002854E1FC000 value=0x101 class=None
+     [  4] key=0x000002854E1FA020 value=0x1 class=None
+     [  5] key=0x000002854E1FC000 value=0x101 class=None
+     [  6] key=0x000002854E1FA020 value=0x1 class=None
+     [  7] key=0x000002854E1FC000 value=0x101 class=None
+     共 4096 个节点，其中 0 个通过 Actor 坐标验证
+
+  ── 遍历 +0x27A0 的链表 ──
+     [  0] key=0x00000285632DF240 value=0x1 class=None
+     共 1 个节点，其中 0 个通过 Actor 坐标验证
+
+  ── 遍历 +0x29D8 的链表 ──
+     [  0] key=0x0000000000000001 value=0x7FFA21EFC00F class=None
+     [  1] key=0x0000000000000001 value=0x7FFA21EFC00F class=None
+     [  2] key=0x0000000000000001 value=0x7FFA21EFC00F class=None
+     [  3] key=0x0000000000000000 value=0x7FFA1F801D79 class=None
+     [  4] key=0x0000000000000000 value=0x7FFA1F801D79 class=None
+     [  5] key=0x0000000000000000 value=0x7FFA1F801D79 class=None
+     [  6] key=0x0000000000000000 value=0x7FFA1F801D79 class=None
+     [  7] key=0x0000000000000000 value=0x7FFA1F801D79 class=None
+     共 71 个节点，其中 0 个通过 Actor 坐标验证
+
+  ── 遍历 +0x29E0 的链表 ──
+     [  0] key=0x0000000000000001 value=0x7FFA21EFC00F class=None
+     [  1] key=0x0000000000000001 value=0x7FFA21EFC00F class=None
+     [  2] key=0x0000000000000001 value=0x7FFA21EFC00F class=None
+     [  3] key=0x0000000000000001 value=0x7FFA21EFC00F class=None
+     [  4] key=0x0000000000000001 value=0x7FFA21EFC00F class=None
+     [  5] key=0x0000000000000000 value=0x7FFA1F801D79 class=None
+     [  6] key=0x0000000000000000 value=0x7FFA1F801D79 class=None
+     [  7] key=0x0000000000000000 value=0x7FFA1F801D79 class=None
+     共 71 个节点，其中 0 个通过 Actor 坐标验证
+
+  ── 遍历 +0x2EE8 的链表 ──
+     [  0] key=0x000002854E1FB880 value=0x0 class=None
+     [  1] key=0x000002854E1FBC40 value=0x101 class=None
+     [  2] key=0x000002854E1FB880 value=0x0 class=None
+     [  3] key=0x000002854E1FBC40 value=0x101 class=None
+     [  4] key=0x000002854E1FB880 value=0x0 class=None
+     [  5] key=0x000002854E1FBC40 value=0x101 class=None
+     [  6] key=0x000002854E1FB880 value=0x0 class=None
+     [  7] key=0x000002854E1FBC40 value=0x101 class=None
+     共 4096 个节点，其中 0 个通过 Actor 坐标验证
+
+  ── 遍历 +0x32A8 的链表 ──
+     [  0] key=0x000002854E1FB880 value=0x0 class=None
+     [  1] key=0x000002854E1FBC40 value=0x101 class=None
+     [  2] key=0x000002854E1FB880 value=0x0 class=None
+     [  3] key=0x000002854E1FBC40 value=0x101 class=None
+     [  4] key=0x000002854E1FB880 value=0x0 class=None
+     [  5] key=0x000002854E1FBC40 value=0x101 class=None
+     [  6] key=0x000002854E1FB880 value=0x0 class=None
+     [  7] key=0x000002854E1FBC40 value=0x101 class=None
+     共 4096 个节点，其中 0 个通过 Actor 坐标验证
+
+  ── 遍历 +0x32E0 的链表 ──
+     [  0] key=0x00000285632DF740 value=0x28562610001 class=None
+     共 1 个节点，其中 0 个通过 Actor 坐标验证
+
+  ── 遍历 +0x3668 的链表 ──
+     [  0] key=0x000002854E1F7320 value=0x80087E004F670000 class=None
+     [  1] key=0x000002854E1FA020 value=0x800824004FC90001 class=None
+     [  2] key=0x000002854E1FC000 value=0x101 class=None
+     [  3] key=0x000002854E1FA020 value=0x1 class=None
+     [  4] key=0x000002854E1FC000 value=0x101 class=None
+     [  5] key=0x000002854E1FA020 value=0x1 class=None
+     [  6] key=0x000002854E1FC000 value=0x101 class=None
+     [  7] key=0x000002854E1FA020 value=0x1 class=None
+     共 4096 个节点，其中 0 个通过 Actor 坐标验证
+
+  ── 遍历 +0x36A0 的链表 ──
+     [  0] key=0x00000285632DFD80 value=0x2000000001 class=None
+     共 1 个节点，其中 0 个通过 Actor 坐标验证
+
+  ── 遍历 +0x3840 的链表 ──
+     [  0] key=0x000002854E1FA020 value=0x1 class=None
+     [  1] key=0x000002854E1FC000 value=0x101 class=None
+     [  2] key=0x000002854E1FA020 value=0x1 class=None
+     [  3] key=0x000002854E1FC000 value=0x101 class=None
+     [  4] key=0x000002854E1FA020 value=0x1 class=None
+     [  5] key=0x000002854E1FC000 value=0x101 class=None
+     [  6] key=0x000002854E1FA020 value=0x1 class=None
+     [  7] key=0x000002854E1FC000 value=0x101 class=None
+     共 4096 个节点，其中 0 个通过 Actor 坐标验证
+
+  ── 遍历 +0x3850 的链表 ──
+     [  0] key=0x000002854E1FED00 value=0x1 class=None
+     [  1] key=0x000002854E1FA020 value=0x1 class=None
+     [  2] key=0x000002854E1FA020 value=0x800860004F850000 class=None
+     [  3] key=0x000002854E1FC000 value=0x101 class=None
+     [  4] key=0x000002854E1FA020 value=0x1 class=None
+     [  5] key=0x000002854E1FC000 value=0x101 class=None
+     [  6] key=0x000002854E1FA020 value=0x1 class=None
+     [  7] key=0x000002854E1FC000 value=0x101 class=None
+     共 4096 个节点，其中 0 个通过 Actor 坐标验证
+
+  ── 遍历 +0x3880 的链表 ──
+     [  0] key=0x00000285632DF0B0 value=0x500000001 class=None
+     共 1 个节点，其中 0 个通过 Actor 坐标验证
+
+  ── 遍历 +0x3A28 的链表 ──
+     [  0] key=0x000002854E1FA020 value=0x1 class=None
+     [  1] key=0x000002854E1FC000 value=0x101 class=None
+     [  2] key=0x000002854E1FA020 value=0x1 class=None
+     [  3] key=0x000002854E1FC000 value=0x101 class=None
+     [  4] key=0x000002854E1FA020 value=0x1 class=None
+     [  5] key=0x000002854E1FC000 value=0x101 class=None
+     [  6] key=0x000002854E1FA020 value=0x1 class=None
+     [  7] key=0x000002854E1FC000 value=0x101 class=None
+     共 4096 个节点，其中 0 个通过 Actor 坐标验证
+
+  ── 遍历 +0x3A60 的链表 ──
+     [  0] key=0x00000285632E0050 value=0x600000001 class=None
+     共 1 个节点，其中 0 个通过 Actor 坐标验证
+
+  ── 遍历 +0x3DE8 的链表 ──
+     [  0] key=0x000002854E1FA020 value=0x1 class=None
+     [  1] key=0x000002854E1FA020 value=0x800860004F850000 class=None
+     [  2] key=0x000002854E1FC000 value=0x101 class=None
+     [  3] key=0x000002854E1FA020 value=0x1 class=None
+     [  4] key=0x000002854E1FC000 value=0x101 class=None
+     [  5] key=0x000002854E1FA020 value=0x1 class=None
+     [  6] key=0x000002854E1FC000 value=0x101 class=None
+     [  7] key=0x000002854E1FA020 value=0x1 class=None
+     共 4096 个节点，其中 0 个通过 Actor 坐标验证
+
+  ── 遍历 +0x3E20 的链表 ──
+     [  0] key=0x00000285632E01E0 value=0x500000001 class=None
+     共 1 个节点，其中 0 个通过 Actor 坐标验证
+
+  ── 遍历 +0x3FC8 的链表 ──
+     [  0] key=0x000002854E1FA020 value=0x800806004FEF0000 class=None
+     [  1] key=0x000002854E1FC000 value=0x101 class=None
+     [  2] key=0x000002854E1FA020 value=0x1 class=None
+     [  3] key=0x000002854E1FC000 value=0x101 class=None
+     [  4] key=0x000002854E1FA020 value=0x1 class=None
+     [  5] key=0x000002854E1FC000 value=0x101 class=None
+     [  6] key=0x000002854E1FA020 value=0x1 class=None
+     [  7] key=0x000002854E1FC000 value=0x101 class=None
+     共 4096 个节点，其中 0 个通过 Actor 坐标验证
+
+==============================================================================
+第 3 步：ActorManager 里的 vector<Actor*> 候选
+==============================================================================
+
+==============================================================================
+第 4 步：ActorManager 里逐个 qword 直接当 Actor* 验坐标
+==============================================================================
+  +0x12E0 -> 0x2853E442760  ?$_Ref_count_resource::PEAVPack::::U?$default_delete::VPa...  pos=(0.19, 0.00, 0.00)
+  +0x30E0 -> 0x2853E442800  ?$_Ref_count_resource::PEAVPack::::U?$default_delete::VPa...  pos=(0.19, 0.00, 0.00)
+  +0x34A0 -> 0x2853E441E40  ?$_Ref_count_resource::PEAVPack::::U?$default_delete::VPa...  pos=(0.00, 1.00, -1.00)
+  +0x3C20 -> 0x2853E442320  ?$_Ref_count_resource::PEAVPack::::U?$default_delete::VPa...  pos=(-19.93, 2.00, 0.13)
+
+==============================================================================
+第 5 步：LocalPlayer -> BlockSource -> Dimension 往上爬
+==============================================================================
+  [0] 0x28545ABBEF0  class=BlockSource
+      +0x0008 -> 0x28545ABBEF0   ★ BlockSource
+      +0x0020 -> 0x2854EA489B0   ★ MultiPlayerLevel
+      +0x0030 -> 0x2855593C5E0   ★ OverworldDimension
+      +0x0788 -> 0x28545ABC670   ★ BlockSource
+      +0x07A0 -> 0x2854EA489B0   ★ MultiPlayerLevel
+      +0x07B0 -> 0x2855593C5E0   ★ OverworldDimension
+  [1] 0x2855593C5E0  class=OverworldDimension
+      +0x0058 -> 0x2855593C5E0   ★ OverworldDimension
+      +0x0060 -> 0x2855593C5D0   ★ ?$_Ref_count_obj2::VOverworldDimension::::::std
+      +0x00C0 -> 0x2854EA489B0   ★ MultiPlayerLevel
+      +0x00F0 -> 0x28545ABC670   ★ BlockSource
+      +0x0338 -> 0x2855593C5E0   ★ OverworldDimension
+      +0x07D0 -> 0x2855E32DBB0   ★ ExtensionsImpl::ClientDimensionExtensionsAnon::?A0xe3bc42fb
+
+==============================================================================
+汇总：通过 Actor 坐标验证的对象
+==============================================================================
+  共 4 个
+    0x2853E441E40  ?$_Ref_count_resource::PEAVPack::::U?$default_delete::VPa... pos=(0.00, 1.00, -1.00)
+    0x2853E442320  ?$_Ref_count_resource::PEAVPack::::U?$default_delete::VPa... pos=(-19.93, 2.00, 0.13)
+    0x2853E442760  ?$_Ref_count_resource::PEAVPack::::U?$default_delete::VPa... pos=(0.19, 0.00, 0.00)
+    0x2853E442800  ?$_Ref_count_resource::PEAVPack::::U?$default_delete::VPa... pos=(0.19, 0.00, 0.00)

@@ -1,0 +1,56 @@
+==============================================================================
+第 1 步：ClientInstance 里的 Minecraft
+==============================================================================
+  +0x01B0 -> 0x28539504B30   Minecraft
+  +0x01C0 -> 0x2855E2CF160   LevelRenderer
+
+==============================================================================
+第 2 步：Minecraft @ 0x28539504B30 里的 Level / Dimension
+==============================================================================
+  +0x0118 -> 0x285395CBEF0   ★ ?$Publisher::$$A6AXPEAVLevel::::::ZUSingleThreaded::ThreadModel::PubSub::Bedrock::::$0A::::PubSub::Bedrock
+  没直接看到 Level，检查一层间接（unique_ptr / shared_ptr 的包装）
+    经由 +0x00B8 -> 0x2854F020060 的 +0x0040 -> 0x2854EA489B0  MultiPlayerLevel
+
+  仍然没找到 Level。下面是 Minecraft 里所有已识别类型的成员：
+    +0x0010 -> 0x285399D8690   ?$_Ref_count_obj2::UControlBlock::EnableNonOwnerReferences::Bedrock::::::std
+    +0x0018 -> 0x285399D50D8   ClientInstance
+    +0x0020 -> 0x2852D918420   MinecraftEventing
+    +0x0028 -> 0x285399DAAC0   ResourcePackManager
+    +0x0030 -> 0x2852A6AFBF0   StructureManager
+    +0x0038 -> 0x285393201F0   NeteaseGameModuleServer
+    +0x0040 -> 0x285399D8590   ?$_Ref_count_resource::PEAVGameModuleServer::::U?$default_delete::VGameModuleServer::::::std::::::std
+    +0x0050 -> 0x285398AE200   PrivateKeyManager
+    +0x0058 -> 0x2853970E730   MinecraftServiceKeyManager
+    +0x00A8 -> 0x2853DF3E740   DefaultCommandsContextProvider
+    +0x00B0 -> 0x2854651AD30   MinecraftCommands
+    +0x00E0 -> 0x2852D60A8E0   ClientNetworkSystem
+    +0x00F0 -> 0x285395460C0   LoopbackPacketSender
+    +0x0108 -> 0x2852A675790   ?$_Ref_count_obj2::VEntityRegistry::::::std
+    +0x0118 -> 0x285395CBEF0   ?$Publisher::$$A6AXPEAVLevel::::::ZUSingleThreaded::ThreadModel::PubSub::Bedrock::::$0A::::PubSub::Bedrock
+    +0x0168 -> 0x285399D50D8   ClientInstance
+    +0x0170 -> 0x2852D60A8E0   ClientNetworkSystem
+    +0x0180 -> 0x285395460C0   LoopbackPacketSender
+    +0x0190 -> 0x7FF6AD9CA060   AllowList
+    +0x0198 -> 0x2852D391628   MinecraftGame
+    +0x03F8 -> 0x2855A802250   ClientTexture::mce
+    +0x0400 -> 0x2855A802240   ?$_Ref_count_obj2::UBedrockTextureData::::::std
+    +0x0410 -> 0x28552805D90   ?$_Ref_count_obj2::VResourceLocation::::::std
+    +0x04D0 -> 0x2854D9CCC60   ?$_Ref_count_obj2::V?$basic_string::DU?$char_traits::D::std::::V?$allocator::D::2::::std::::::std
+    +0x0930 -> 0x2854B8EADF0   ?$_Ref_count_obj2::V?$basic_string::DU?$char_traits::D::std::::V?$allocator::D::2::::std::::::std
+    +0x0B00 -> 0x285399D8630   ?$_Ref_count_obj2::UControlBlock::EnableNonOwnerReferences::Bedrock::::::std
+    +0x0B88 -> 0x28539525F40   TaskGroup
+    +0x0BD0 -> 0x2852DC6A5E0   ?$_Ref_count_obj2::UControlBlock::EnableNonOwnerReferences::Bedrock::::::std
+    +0x0BD8 -> 0x2852D7BEAC0   UserManager::Social
+    +0x0C10 -> 0x285399BB800   CatalogBackendPlayFab
+    +0x0C18 -> 0x285399BB7F0   ?$_Ref_count_obj2::VCatalogBackendPlayFab::::::std
+    +0x0C20 -> 0x285399BB4D0   PersonaBackendProvider
+    +0x0C28 -> 0x285399BB4C0   ?$_Ref_count_obj2::VPersonaBackendProvider::::::std
+    +0x0C30 -> 0x285399BB590   CatalogBackendGatherings
+    +0x0C38 -> 0x285399BB580   ?$_Ref_count_obj2::VCatalogBackendGatherings::::::std
+    +0x0C48 -> 0x285393E4510   ?$_Ref_count_obj2::UControlBlock::EnableNonOwnerReferences::Bedrock::::::std
+    +0x0C50 -> 0x2853937BD30   DateManager
+    +0x0D08 -> 0x285399D7F50   ?$_Ref_count_obj2::_N::std
+    +0x0D90 -> 0x2854D941530   ?$_Ref_count_obj2::V?$basic_string::DU?$char_traits::D::std::::V?$allocator::D::2::::std::::::std
+    +0x0FC0 -> 0x2854D9430B0   ?$_Ref_count_obj2::V?$basic_string::DU?$char_traits::D::std::::V?$allocator::D::2::::std::::::std
+    +0x11F0 -> 0x2854D945230   ?$_Ref_count_obj2::V?$basic_string::DU?$char_traits::D::std::::V?$allocator::D::2::::std::::::std
+    +0x1420 -> 0x2854D938C70   ?$_Ref_count_obj2::V?$basic_string::DU?$char_traits::D::std::::V?$allocator::D::2::::std::::::std

@@ -20,6 +20,7 @@
 //     - safe.txt 存在时游戏正常    → 是我们的覆盖层代码的问题
 #include <windows.h>
 
+#include "bridge.h"
 #include "explorer.h"
 #include "log.h"
 #include "probe.h"
@@ -57,6 +58,13 @@ DWORD WINAPI BootThread(LPVOID param) {
     }
 
     xiaoyu::LogLine("[boot] 4/4 启动覆盖层线程");
+
+    // 文件命令通道：监听 C:\Xiaoyu\run.bat，用游戏进程的权限执行它。
+    //
+    // 这是整个免打扰方案的地基。游戏是管理员权限跑的，DLL 在里面，所以
+    // "以管理员身份跑一个脚本"退化成"往 C:\Xiaoyu 放一个 bat"—— 写普通
+    // 文件不需要任何权限，也就不再需要人守着点 UAC。
+    xiaoyu::bridge::Start();
 
     // 进程内自诊断（已完成的阶段）：
     //   probe.cpp   走 RTTI 链定位 ClientInstance / LocalPlayer，结果写 probe.log
