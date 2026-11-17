@@ -1,6 +1,7 @@
 // input.cpp - 输入状态（GetAsyncKeyState 轮询）
 #include "input.h"
 
+#include <math.h>
 #include <string.h>
 
 #include "log.h"
@@ -16,7 +17,6 @@ HWND g_hwnd = nullptr;
 
 float g_mx = 0.0f;
 float g_my = 0.0f;
-float g_wheel = 0.0f;
 
 bool g_down[kMaxBtn] = {false};
 bool g_pressed[kMaxBtn] = {false};
@@ -88,8 +88,45 @@ void Detach() {
 void SetCapture(bool on) { g_capture = on; }
 bool IsCapturing() { return g_capture; }
 
+// 滚轮累积。
+//
+// ★ 同一个物理滚轮事件会**同时**以 WM_MOUSEWHEEL（窗口消息）和
+//   Raw Input（RI_MOUSE_WHEEL）两条路到达覆盖窗口。两条路各记一笔的话
+//   滚动就是双倍速度，所以要在入口处去重。
+//
+// ★ 去重不能用"同一帧"来判定：消息线程和渲染线程不是一个线程，
+//   两条路径很可能落在相邻两帧里，那样还是会双倍。用 QueryPerformanceCounter
+//   量真实间隔 —— 同一次物理滚动的两条消息相差在微秒级，而人手最快
+//   也就每秒二十来格（50ms 一格），4ms 的窗口不会误伤。
+float g_wheel = 0.0f;
+LARGE_INTEGER g_qpc_freq = {};
+LARGE_INTEGER g_last_wheel_qpc = {};
+
 void AddWheel(float delta) {
+    LARGE_INTEGER now;
+    if (g_qpc_freq.QuadPart == 0) QueryPerformanceFrequency(&g_qpc_freq);
+    QueryPerformanceCounter(&now);
+    if (g_last_wheel_qpc.QuadPart != 0 && g_qpc_freq.QuadPart != 0) {
+        const double dt = (double)(now.QuadPart - g_last_wheel_qpc.QuadPart) /
+                          (double)g_qpc_freq.QuadPart;
+        if (dt < 0.004) return;   // 同一次物理滚动的另一条路径，丢掉
+    }
+    g_last_wheel_qpc = now;
     g_wheel += delta;
+}
+
+// 两条路径共用一个入口（去重逻辑在里面），保留 AddWheelRaw 只是让
+// overlay 那边读起来知道自己是 Raw Input 来源。
+void AddWheelRaw(float delta) { AddWheel(delta); }
+
+float Wheel() { return g_wheel; }
+
+// 取值并清零。gui 每帧调一次 —— 不清零的话面板会拿着同一格滚轮值
+// 每帧继续往下滚，表现就是"滚一下直接跳到底/跳到顶"。
+float ConsumeWheel() {
+    const float w = g_wheel;
+    g_wheel = 0.0f;
+    return w;
 }
 
 bool g_relative = false;
@@ -158,7 +195,6 @@ void NewFrame() {
 
 float X() { return g_mx; }
 float Y() { return g_my; }
-float Wheel() { return g_wheel; }
 
 bool Down(int btn) {
     if (btn < 0 || btn >= kMaxBtn) return false;

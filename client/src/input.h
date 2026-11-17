@@ -25,13 +25,21 @@ void Detach();
 void SetCapture(bool on);
 bool IsCapturing();
 
-// 每帧开头调用：刷新鼠标位置，算 pressed/released 边沿，清空滚轮
+// 每帧开头调用：刷新鼠标位置，算 pressed/released 边沿。
+// 滚轮不在这里清 —— 它的清零交给 ConsumeWheel()，见下面的说明。
 void NewFrame();
 
 float X();
 float Y();
+
+// 本帧滚轮量（单位是"格"），只读不清零。
+// AddWheel 是消息路径（WM_MOUSEWHEEL），AddWheelRaw 是 Raw Input 路径。
+// ★ 同一个物理滚轮事件两条路都会来一次，去重做在 AddWheel 里（4ms 窗口），
+//   两个函数都走同一个累积值，调用方不用关心来源。
 float Wheel();
+float ConsumeWheel();   // 取值并清零，gui 每帧调一次
 void AddWheel(float delta);
+void AddWheelRaw(float delta);
 
 bool Down(int btn);      // 0 左 1 右 2 中 3 X1 4 X2
 bool Pressed(int btn);

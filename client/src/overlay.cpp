@@ -480,8 +480,10 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                         input::AddMouseDelta(m.lLastX, m.lLastY);
                     }
                     if (m.usButtonFlags & RI_MOUSE_WHEEL) {
-                        input::AddWheel((float)(short)m.usButtonData /
-                                        (float)WHEEL_DELTA);
+                        // 走 Raw 路径记账：同一次滚动 WM_MOUSEWHEEL 也会来一遍，
+                        // input 那边按"取较大值"去重（见 input.cpp 的 Wheel()）
+                        input::AddWheelRaw((float)(short)m.usButtonData /
+                                           (float)WHEEL_DELTA);
                     }
                 }
             }

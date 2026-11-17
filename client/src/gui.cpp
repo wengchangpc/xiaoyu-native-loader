@@ -92,6 +92,13 @@ int g_bind_target = -1;   // 正在等按键的 feature 下标
 // 于是"点绑定 → 按 K → K 绑上了 → K 顺手把模块也切了一次"，看起来像绑定有 bug。
 ULONGLONG g_bind_guard_at = 0;
 
+// 本帧滚轮量。OnFrame 开头从 input 消费一次，面板绘制时读这个缓存。
+//
+// ★ 以前这里直接调 input::Wheel()，而 input 那边的累积值**从来不清零**：
+//   滚一格之后 g_wheel 一直是 1，面板每帧都拿这个 1 再滚一次，
+//   于是"滚一下就直接跳到底/跳到顶"。现在改成每帧消费一次。
+float g_wheel_frame = 0.0f;
+
 // HUD 拖动状态：g_hud_drag 是正在拖的 feature 下标（-1 = 没在拖），
 // 另存一份按下点相对元素左上角的偏移，拖动时元素才不会"跳"到鼠标中心。
 int g_hud_drag = -1;
@@ -1148,11 +1155,11 @@ void DrawPanel(Panel& p, bool interactive) {
             }
         }
 
-        // 滚轮（Raw Input 送进来，见 overlay.cpp 的 RIDEV_INPUTSINK）
-        if (body_inside && !p.collapsed && input::Wheel() != 0.0f) {
+        // 滚轮（Raw Input + WM_MOUSEWHEEL，去重后每帧一个值，见 g_wheel_frame）
+        if (body_inside && !p.collapsed && g_wheel_frame != 0.0f) {
             float max_scroll = p.content_h - p.max_body;
             if (max_scroll > 0.0f) {
-                p.scroll -= input::Wheel() * 28.0f * s;   // 原版 _niloreScrollAt 的步长
+                p.scroll -= g_wheel_frame * 28.0f * s;   // 原版 _niloreScrollAt 的步长
                 if (p.scroll < 0.0f) p.scroll = 0.0f;
                 if (p.scroll > max_scroll) p.scroll = max_scroll;
                 g_scroll[p.group] = p.scroll;
@@ -1925,6 +1932,8 @@ void OnFrame() {
     g_last_tick = now;
 
     input::NewFrame();
+    // 滚轮每帧只取一次并清零，面板绘制时读这个值（否则会一直拿旧值往下滚）
+    g_wheel_frame = input::ConsumeWheel();
     cfg::Tick();
 
     // 缩放每帧统一算一次：面板收起时 DrawHud 也要用，不能只在面板分支里算
