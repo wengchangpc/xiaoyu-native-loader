@@ -8,6 +8,10 @@ on:
       - '.github/workflows/client.yml'
   workflow_dispatch:
 
+# 发布 release 需要写权限。默认 GITHUB_TOKEN 是只读的，不加这段上传会 403。
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: windows-latest
@@ -36,3 +40,27 @@ jobs:
           name: xiaoyu-client-x64
           path: client/build/Release/xiaoyu_client.dll
           if-no-files-found: error
+
+      # artifact 下载现在强制登录，public 仓库也一样。
+      # 走 release 才能匿名拿：
+      #   releases/download/ci-latest/xiaoyu_client.dll
+      # tag 固定为 ci-latest，每次 push 覆盖同一个 release，永远指向最新构建。
+      - name: Publish to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ci-latest
+          name: "CI latest build"
+          body: |
+            自动构建产物，每次 push 覆盖。
+
+            匿名下载：
+            https://github.com/wengchangpc/xiaoyu-native-loader/releases/download/ci-latest/xiaoyu_client.dll
+
+            commit: ${{ github.sha }}
+            run: ${{ github.run_number }}
+          files: client/build/Release/xiaoyu_client.dll
+          fail_on_unmatched_files: true
+          prerelease: true
+          make_latest: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
