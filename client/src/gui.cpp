@@ -57,6 +57,9 @@ struct Panel {
     int row_count = 0;
 };
 
+// 定义在下面（通知那块），但工具条/绑定/HUD 复位都要用，先声明一下。
+void PushToast(const wchar_t* text);
+
 std::vector<Panel> g_panels;
 std::vector<char> g_expanded;      // 按 feature 下标
 std::vector<float> g_scroll_saved; // 未用，预留
@@ -69,6 +72,10 @@ float g_scroll[GROUP_COUNT] = {0.0f};
 bool g_visible = false;
 float g_s = 2.0f;
 
+// HUD 屏内编辑模式。开着的时候面板是收起的（不然两种交互叠一起），
+// 但鼠标仍然要归我们 —— 见 gui::WantsMouse()。
+bool g_hud_edit = false;
+
 // 交互
 int g_drag_panel = -1;
 float g_drag_off_x = 0.0f;
@@ -79,6 +86,21 @@ int g_drag_scrollbar = -1;
 float g_drag_scroll_start = 0.0f;
 float g_drag_mouse_start = 0.0f;
 int g_bind_target = -1;   // 正在等按键的 feature 下标
+
+// 绑定完成后 300ms 内不再响应模块快捷键。
+// 不这么做的话，刚绑完的那个键在同一次按下里还会走一遍"模块快捷键"循环，
+// 于是"点绑定 → 按 K → K 绑上了 → K 顺手把模块也切了一次"，看起来像绑定有 bug。
+ULONGLONG g_bind_guard_at = 0;
+
+// HUD 拖动状态：g_hud_drag 是正在拖的 feature 下标（-1 = 没在拖），
+// 另存一份按下点相对元素左上角的偏移，拖动时元素才不会"跳"到鼠标中心。
+int g_hud_drag = -1;
+float g_hud_drag_dx = 0.0f;
+float g_hud_drag_dy = 0.0f;
+
+// 进/出编辑模式后的一小段静默期。点「HUD 布局」那一下本身就是一次鼠标按下，
+// 不挡的话同一帧就会把鼠标底下的元素抓起来开始拖。
+ULONGLONG g_hud_edit_guard_at = 0;
 
 // FPS 统计
 ULONGLONG g_last_tick = 0;
@@ -101,6 +123,84 @@ const wchar_t* FeatName(int i) {
 
 const wchar_t* GroupName(int g) {
     return cfg::Chinese() ? kGroups[g].zh : kGroups[g].en;
+}
+
+// 前台窗口是不是本进程的（= 游戏）。
+// GetAsyncKeyState 读的是全局键盘状态，在别的窗口打字时它照样为真，
+// 所以任何"按某键触发功能"的地方都必须先过这一关，否则绑了字母键的模块
+// 会在浏览器里打字时乱开乱关。
+bool GameForeground() {
+    HWND fg = GetForegroundWindow();
+    if (fg == nullptr) return false;
+    DWORD pid = 0;
+    GetWindowThreadProcessId(fg, &pid);
+    return pid == GetCurrentProcessId();
+}
+
+// 虚拟键 -> 人能认的名字。MapVirtualKeyW 只对打得出字符的键有用，
+// F1/F12、Shift、方向键这些全是空白或乱码，绑定列表里就成了 "0x70"。
+const wchar_t* BindKeyName(int vk) {
+    static wchar_t buf[16];
+    switch (vk) {
+        case 0: return L"\u672A\u7ED1\u5B9A";
+        case VK_LBUTTON: return L"\u5DE6\u952E";
+        case VK_RBUTTON: return L"\u53F3\u952E";
+        case VK_MBUTTON: return L"\u4E2D\u952E";
+        case VK_SPACE: return L"Space";
+        case VK_TAB: return L"Tab";
+        case VK_RETURN: return L"Enter";
+        case VK_BACK: return L"Backspace";
+        case VK_DELETE: return L"Delete";
+        case VK_INSERT: return L"Insert";
+        case VK_HOME: return L"Home";
+        case VK_END: return L"End";
+        case VK_PRIOR: return L"PgUp";
+        case VK_NEXT: return L"PgDn";
+        case VK_UP: return L"\u4E0A";
+        case VK_DOWN: return L"\u4E0B";
+        case VK_LEFT: return L"\u5DE6";
+        case VK_RIGHT: return L"\u53F3";
+        case VK_LSHIFT: return L"LShift";
+        case VK_RSHIFT: return L"RShift";
+        case VK_LCONTROL: return L"LCtrl";
+        case VK_RCONTROL: return L"RCtrl";
+        case VK_LMENU: return L"LAlt";
+        case VK_RMENU: return L"RAlt";
+        case VK_CAPITAL: return L"Caps";
+        case VK_OEM_1: return L";";
+        case VK_OEM_2: return L"/";
+        case VK_OEM_3: return L"`";
+        case VK_OEM_4: return L"[";
+        case VK_OEM_5: return L"\\";
+        case VK_OEM_6: return L"]";
+        case VK_OEM_7: return L"'";
+        case VK_OEM_PLUS: return L"=";
+        case VK_OEM_MINUS: return L"-";
+        case VK_OEM_COMMA: return L",";
+        case VK_OEM_PERIOD: return L".";
+        default: break;
+    }
+    if (vk >= VK_F1 && vk <= VK_F24) {
+        swprintf_s(buf, L"F%d", vk - VK_F1 + 1);
+        return buf;
+    }
+    if ((vk >= '0' && vk <= '9') || (vk >= 'A' && vk <= 'Z')) {
+        buf[0] = (wchar_t)vk;
+        buf[1] = 0;
+        return buf;
+    }
+    if (vk >= VK_NUMPAD0 && vk <= VK_NUMPAD9) {
+        swprintf_s(buf, L"Num%d", vk - VK_NUMPAD0);
+        return buf;
+    }
+    const UINT ch = MapVirtualKeyW((UINT)vk, MAPVK_VK_TO_CHAR) & 0xFFFF;
+    if (ch >= 32 && ch < 127) {
+        buf[0] = (wchar_t)ch;
+        buf[1] = 0;
+        return buf;
+    }
+    swprintf_s(buf, L"0x%02X", vk);
+    return buf;
 }
 
 // ★ catalog 里 PK_SLIDER 的第三个浮点数（struct 里叫 vstep）不是步长，
@@ -697,19 +797,14 @@ void DrawParamRow(int pi, int fi, float x, float y, float w, bool interactive) {
                 break;
             }
             case PK_KEYBIND: {
-                int vk = cfg::ModuleBind(fi);
-                wchar_t buf[48];
+                const int vk = cfg::ModuleBind(fi);
+                wchar_t buf[64];
                 if (g_bind_target == fi) {
-                    wcscpy_s(buf, L"按任意键…");
-                } else if (vk == 0) {
-                    wcscpy_s(buf, L"未绑定");
+                    wcscpy_s(buf, cfg::Chinese()
+                                      ? L"\u6309\u952E\u2026 (Del \u53D6\u6D88)"
+                                      : L"press key (Del = none)");
                 } else {
-                    UINT ch = MapVirtualKeyW((UINT)vk, MAPVK_VK_TO_CHAR);
-                    if (ch >= 32 && ch < 127) {
-                        swprintf_s(buf, L"%c", (wchar_t)ch);
-                    } else {
-                        swprintf_s(buf, L"0x%02X", vk);
-                    }
+                    wcscpy_s(buf, BindKeyName(vk));
                 }
                 render::Text(buf, x + w * 0.5f, y, w * 0.5f - 12.0f * s, h, 9.5f * s,
                              g_bind_target == fi ? theme::kAccent
@@ -730,6 +825,20 @@ void DrawParamRow(int pi, int fi, float x, float y, float w, bool interactive) {
     }
 
     // ── 命中测试 ──
+    // 右键点任意一条参数 = 只把这一条恢复默认（模块整体复位见模块行的右键）
+    if (input::Pressed(1) && inside) {
+        if (p.kind == PK_KEYBIND) {
+            cfg::SetModuleBind(fi, 0);
+            if (g_bind_target == fi) g_bind_target = -1;
+        } else {
+            cfg::ClearParam(pi);
+        }
+        wchar_t msg[96];
+        swprintf_s(msg, L"%ls \u00B7 \u5DF2\u6062\u590D\u9ED8\u8BA4", p.label);
+        PushToast(msg);
+        return;
+    }
+
     if (input::Pressed(0) && !g_click_used) {
         switch (p.kind) {
             case PK_SLIDER:
@@ -757,7 +866,8 @@ void DrawParamRow(int pi, int fi, float x, float y, float w, bool interactive) {
                 }
                 break;
             case PK_KEYBIND:
-                if (inside) g_bind_target = fi;
+                // 再点一次同一行 = 取消这次捕获（不用去按 Delete）
+                if (inside) g_bind_target = (g_bind_target == fi) ? -1 : fi;
                 break;
             default:
                 break;
@@ -798,6 +908,16 @@ bool InRect(float mx, float my, float x, float y, float w, float h) {
     return mx >= x && mx <= x + w && my >= y && my <= y + h;
 }
 
+// 工具条最右边那个「HUD 布局」按钮：点一下收起面板、进屏内拖拽模式。
+void EditBtnRect(float* x, float* y, float* w, float* h) {
+    float px, py, pw, ph;
+    ProfileRect(3, &px, &py, &pw, &ph);
+    *x = px + pw + 8.0f * g_s;
+    *y = py;
+    *w = 46.0f * g_s;
+    *h = ph;
+}
+
 void DrawToolbar(bool interactive) {
     const float s = g_s;
     float bx, by, bw, bh;
@@ -807,6 +927,8 @@ void DrawToolbar(bool interactive) {
 
     float px[4], py[4], pw[4], ph[4];
     for (int i = 1; i <= 3; ++i) ProfileRect(i, &px[i], &py[i], &pw[i], &ph[i]);
+    float ex, ey, ew, eh;
+    EditBtnRect(&ex, &ey, &ew, &eh);
 
     if (interactive) {
         if (input::Pressed(0) && !g_click_used) {
@@ -815,6 +937,21 @@ void DrawToolbar(bool interactive) {
                 cfg::SwitchProfile(i);
                 g_search_focus = false;
                 g_click_used = true;
+                {
+                    wchar_t msg[64];
+                    swprintf_s(msg, L"\u914D\u7F6E\u6863 %d", i);
+                    PushToast(msg);
+                }
+                return;
+            }
+            if (InRect(mx, my, ex, ey, ew, eh)) {
+                // 进 HUD 拖拽模式：先开编辑态再收面板，
+                // 顺序反了会有一帧 WantsMouse() 变假，覆盖层把鼠标还给游戏。
+                SetHudEdit(true);
+                SetVisible(false);
+                g_click_used = true;
+                PushToast(cfg::Chinese() ? L"\u8FDB\u5165 HUD \u5E03\u5C40\u6A21\u5F0F"
+                                         : L"HUD layout mode");
                 return;
             }
             if (InRect(mx, my, bx, by, bw, bh)) {
@@ -868,6 +1005,12 @@ void DrawToolbar(bool interactive) {
         render::Text(lb, px[i], py[i], pw[i], ph[i], 9.5f * s,
                      act ? theme::kHeadBg : theme::kOff, ALIGN_CENTER, false);
     }
+
+    // HUD 布局按钮：点一下收起面板，直接在画面上拖 HUD 元素摆位置
+    const bool ehot = InRect(mx, my, ex, ey, ew, eh);
+    render::RoundRect(ex, ey, ew, eh, 3.0f * s, ehot ? theme::kRowHover : theme::kRow);
+    render::Text(cfg::Chinese() ? L"HUD \u5E03\u5C40" : L"HUD layout", ex, ey, ew, eh,
+                 9.5f * s, ehot ? theme::kAccent : theme::kOff, ALIGN_CENTER, false);
 }
 
 void DrawFeatureRow(int fi, const Panel& p, float row_x, float& row_y, bool interactive) {
@@ -893,8 +1036,25 @@ void DrawFeatureRow(int fi, const Panel& p, float row_x, float& row_y, bool inte
         }
 
         const FeatureInfo& f = kFeatures[fi];
-        float label_size = 10.5f * s;
-        render::Text(FeatName(fi), row_x + 8.0f * s, y, w - 28.0f * s, h, label_size,
+        const float label_size = 10.5f * s;
+
+        // 绑了键的模块在行尾挂一个小键帽，不用展开参数就能看见绑的是什么。
+        // 之前只有展开到「功能快捷键」那一行才知道，绑多了根本记不住。
+        const int bvk = (fi == g_bind_target) ? 0 : cfg::ModuleBind(fi);
+        float name_w = w - 28.0f * s;
+        if (bvk != 0) {
+            const wchar_t* kn = BindKeyName(bvk);
+            const float ks = 8.5f * s;
+            const float kw = render::Measure(kn, ks, false) + 9.0f * s;
+            const float kh = 12.0f * s;
+            const float kx = row_x + w - 20.0f * s - kw;
+            render::RoundRect(kx, y + (h - kh) * 0.5f, kw, kh, 2.0f * s, theme::kRowHover);
+            render::Text(kn, kx, y, kw, h, ks, theme::kDim, ALIGN_CENTER, false);
+            name_w = kx - (row_x + 8.0f * s) - 4.0f * s;
+            if (name_w < 10.0f * s) name_w = 10.0f * s;
+        }
+
+        render::Text(FeatName(fi), row_x + 8.0f * s, y, name_w, h, label_size,
                      on ? theme::kAccent : theme::kOff, ALIGN_LEFT, false);
 
         if (f.paramCount > 0) {
@@ -914,6 +1074,18 @@ void DrawFeatureRow(int fi, const Panel& p, float row_x, float& row_y, bool inte
             } else {
                 cfg::SetModuleOn(fi, !on);
             }
+        }
+        // 右键点模块行 = 把这个模块的所有参数和快捷键恢复出厂。
+        // 调参数调到不知道动了哪个的时候，比逐个滑块往回拖快得多。
+        if (input::Pressed(1) && inside && g_drag_panel < 0) {
+            const FeatureInfo& f = kFeatures[fi];
+            for (int k = 0; k < f.paramCount; ++k) cfg::ClearParam(f.paramFirst + k);
+            cfg::SetModuleBind(fi, 0);
+            if (g_bind_target == fi) g_bind_target = -1;
+            wchar_t msg[96];
+            swprintf_s(msg, L"%ls \u00B7 \u5DF2\u6062\u590D\u51FA\u5382", FeatName(fi));
+            PushToast(msg);
+            LogLine("[gui] reset feature %ls", f.en);
         }
     }
 
@@ -1095,7 +1267,31 @@ std::vector<NotifyItem> g_notifies;
 std::vector<char> g_prev_on;
 bool g_notify_was_on = false;
 
+// 系统提示（绑定成功 / HUD 复位 / 切配置档 …）。
+// 单独一条链，不能塞进 g_notifies —— 那个列表在 Notification 模块关掉时
+// 会被整体清空，而"我刚按了 Delete 取消绑定"这类反馈跟那个模块没关系。
+std::vector<NotifyItem> g_toasts;
+
+void PushToast(const wchar_t* text) {
+    if (text == nullptr) return;
+    NotifyItem n;
+    n.text = text;
+    n.on = true;
+    n.at = GetTickCount64();
+    g_toasts.push_back(n);
+    if (g_toasts.size() > 4) g_toasts.erase(g_toasts.begin());
+}
+
+void PruneToasts() {
+    const ULONGLONG now = GetTickCount64();
+    while (!g_toasts.empty() && now - g_toasts.front().at > 2400) {
+        g_toasts.erase(g_toasts.begin());
+    }
+}
+
 void TickNotifications() {
+    PruneToasts();   // 系统提示跟 Notification 模块无关，先处理掉
+
     const int idx = FindFeatureByName(L"Notification");
     const bool enabled = (idx >= 0) && cfg::ModuleOn(idx);
     if (!enabled) {
@@ -1141,14 +1337,13 @@ void TickNotifications() {
     }
 }
 
-void DrawNotifications() {
-    if (g_notifies.empty()) return;
+void DrawNotifyList(const std::vector<NotifyItem>& list, float& y) {
+    if (list.empty()) return;
     const float s = g_s;
     const ULONGLONG now = GetTickCount64();
-    float y = (float)render::Height() * 0.42f;
 
-    for (size_t i = 0; i < g_notifies.size(); ++i) {
-        const NotifyItem& n = g_notifies[i];
+    for (size_t i = 0; i < list.size(); ++i) {
+        const NotifyItem& n = list[i];
         const ULONGLONG age = now - n.at;
         if (age > 2400) continue;
 
@@ -1174,15 +1369,187 @@ void DrawNotifications() {
     }
 }
 
-// 面板里的鼠标指针一律用系统光标，不自绘。
+void DrawNotifications() {
+    if (g_notifies.empty() && g_toasts.empty()) return;
+    float y = (float)render::Height() * 0.42f;
+    // 系统提示排在前面：它是对刚刚那次操作的直接反馈
+    DrawNotifyList(g_toasts, y);
+    DrawNotifyList(g_notifies, y);
+}
+
+// ── HUD 屏内编辑 ────────────────────────────────────────────────
+// 原版有个独立的 HudEditScreen：进编辑模式后每个 HUD 元素外面套一圈亮框，
+// 直接拖着摆。这里做同一件事，写回去的还是模块自己的 posx/posy。
 //
-// 这里原来有一个 DrawSoftwareCursor()，会画一个箭头形状的多边形。它带来两个问题：
-//   1) 系统光标可见时会和它叠成"两个光标一起动"；
-//   2) 形状和大小跟真实光标不一致，点起来总觉得对不上。
-// 现在改成：面板打开时由覆盖层把系统光标"推"成可见（见 overlay.cpp 的
-// SetSystemCursor），面板里直接使用真实光标。这样位置天然一致、手感也一致。
+// 做法：DrawHud 每画完一个元素就把它的矩形登记进 g_hud_hits，
+// 全部登记完之后再统一跑一次 HudEditInput。这样命中盒和画面严丝合缝，
+// 不会出现"框在这、字在那"的错位。
+struct HudHit {
+    int fi = -1;
+    float x = 0.0f, y = 0.0f, w = 0.0f, h = 0.0f;
+    bool right_anchor = false;   // ArrayList 的 posx 是右边缘，不是左边缘
+};
+
+const int kHudHitMax = 8;
+HudHit g_hud_hits[kHudHitMax];
+int g_hud_hit_count = 0;
+
+void SetFeatParam(int fi, const wchar_t* attr, float v) {
+    const int pi = FeatParamIndex(fi, attr);
+    if (pi >= 0) cfg::SetParamValue(pi, v);
+}
+
+int HudHitAt(float mx, float my) {
+    for (int i = g_hud_hit_count - 1; i >= 0; --i) {
+        const HudHit& t = g_hud_hits[i];
+        if (mx >= t.x - 4.0f && mx <= t.x + t.w + 4.0f && my >= t.y - 4.0f &&
+            my <= t.y + t.h + 4.0f) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+void HudEditBox(int fi, float x, float y, float w, float h, bool right_anchor) {
+    if (fi < 0) return;
+    if (g_hud_hit_count < kHudHitMax) {
+        HudHit& t = g_hud_hits[g_hud_hit_count++];
+        t.fi = fi;
+        t.x = x;
+        t.y = y;
+        t.w = w;
+        t.h = h;
+        t.right_anchor = right_anchor;
+    }
+    if (!g_hud_edit) return;
+
+    const float s = g_s;
+    const bool hot = (g_hud_drag >= 0) && (g_hud_drag < g_hud_hit_count) &&
+                     (g_hud_hits[g_hud_drag].fi == fi);
+    render::RoundRectStroke(x - 3.0f * s, y - 3.0f * s, w + 6.0f * s, h + 6.0f * s,
+                            3.0f * s, hot ? 2.0f : 1.0f,
+                            hot ? theme::kAccent : render::RgbaF(1.0f, 1.0f, 1.0f, 0.60f));
+    if (!hot) {
+        // 名字挂在框的左上角，密密麻麻一堆框的时候能分清谁是谁
+        const wchar_t* name = FeatName(fi);
+        const float ts = 8.5f * s;
+        const float tw = render::Measure(name, ts, false) + 8.0f * s;
+        render::Rect(x - 3.0f * s, y - 3.0f * s - 11.0f * s, tw, 11.0f * s,
+                     render::RgbaF(0.06f, 0.06f, 0.06f, 0.85f));
+        render::Text(name, x - 3.0f * s, y - 3.0f * s - 11.0f * s, tw, 11.0f * s, ts,
+                     theme::kSub, ALIGN_CENTER, false);
+    }
+}
+
+void HudEditInput() {
+    if (!g_hud_edit) {
+        g_hud_drag = -1;
+        return;
+    }
+    const float mx = input::X();
+    const float my = input::Y();
+    const float vw = (float)render::Width();
+    const float vh = (float)render::Height();
+    if (vw < 1.0f || vh < 1.0f) return;
+    if (GetTickCount64() < g_hud_edit_guard_at) return;
+
+    // 右键 = 这个元素的位置恢复出厂值（posx/posy 都删掉，回落到原版数值）
+    if (input::Pressed(1)) {
+        const int i = HudHitAt(mx, my);
+        if (i >= 0) {
+            const int fi = g_hud_hits[i].fi;
+            cfg::ClearParam(FeatParamIndex(fi, L"posx"));
+            cfg::ClearParam(FeatParamIndex(fi, L"posy"));
+            wchar_t msg[96];
+            swprintf_s(msg, L"%ls \u00B7 \u4F4D\u7F6E\u5DF2\u590D\u4F4D", FeatName(fi));
+            PushToast(msg);
+        }
+        g_hud_drag = -1;
+        return;
+    }
+
+    if (g_hud_drag < 0 && input::Pressed(0)) {
+        const int i = HudHitAt(mx, my);
+        if (i >= 0) {
+            g_hud_drag = i;
+            g_hud_drag_dx = mx - g_hud_hits[i].x;
+            g_hud_drag_dy = my - g_hud_hits[i].y;
+        }
+    }
+
+    if (g_hud_drag < 0) return;
+    if (!input::Down(0)) {
+        g_hud_drag = -1;
+        return;
+    }
+    if (g_hud_drag >= g_hud_hit_count) {
+        g_hud_drag = -1;
+        return;
+    }
+
+    const HudHit& t = g_hud_hits[g_hud_drag];
+    const float nx = mx - g_hud_drag_dx;
+    const float ny = my - g_hud_drag_dy;
+
+    // 吸附：默认 0.5% 一格，按住 Shift 细到 0.1%。
+    // 不做吸附的话位置会是 0.4713xxx 这种随机小数，想手动对齐两个元素基本不可能。
+    const float q = input::KeyDown(VK_SHIFT) ? 0.001f : 0.005f;
+    float fx = (t.right_anchor ? (nx + t.w) : nx) / vw;
+    float fy = ny / vh;
+    fx = floorf(fx / q + 0.5f) * q;
+    fy = floorf(fy / q + 0.5f) * q;
+    if (fx < 0.0f) fx = 0.0f;
+    if (fx > 1.0f) fx = 1.0f;
+    if (fy < 0.0f) fy = 0.0f;
+    if (fy > 1.0f) fy = 1.0f;
+
+    SetFeatParam(t.fi, L"posx", fx);
+    SetFeatParam(t.fi, L"posy", fy);
+}
+
+void DrawHudEditHint() {
+    if (!g_hud_edit) return;
+    const float s = g_s;
+    const wchar_t* tip =
+        cfg::Chinese()
+            ? L"HUD \u5E03\u5C40 \u00B7 \u62D6\u52A8\u6446\u653E \u00B7 \u53F3\u952E\u590D\u4F4D"
+              L" \u00B7 \u518D\u6309\u4E00\u6B21\u70ED\u952E\u9000\u51FA"
+            : L"HUD layout \u00B7 drag to place \u00B7 right-click to reset \u00B7 "
+              L"hotkey again to exit";
+    const float ts = 10.0f * s;
+    const float tw = render::Measure(tip, ts, false) + 24.0f * s;
+    const float th = 22.0f * s;
+    const float x = ((float)render::Width() - tw) * 0.5f;
+    const float y = 10.0f * s;
+    render::RoundRect(x, y, tw, th, 4.0f * s, render::RgbaF(0.06f, 0.06f, 0.06f, 0.88f));
+    render::Rect(x, y, 2.0f * s, th, theme::kAccent);
+    render::Text(tip, x, y, tw, th, ts, theme::kAccent, ALIGN_CENTER, false);
+
+    // 正在拖的时候把当前坐标也报出来，吸附到 0.5% 才看得出效果
+    if (g_hud_drag >= 0 && g_hud_drag < g_hud_hit_count) {
+        const int fi = g_hud_hits[g_hud_drag].fi;
+        wchar_t sub[128];
+        swprintf_s(sub, L"%ls   X %.1f%%   Y %.1f%%", FeatName(fi),
+                   FeatParamUser(fi, L"posx", 0.0f) * 100.0f,
+                   FeatParamUser(fi, L"posy", 0.0f) * 100.0f);
+        const float sw = render::Measure(sub, ts, false) + 24.0f * s;
+        const float sx = ((float)render::Width() - sw) * 0.5f;
+        const float sy = y + th + 4.0f * s;
+        render::RoundRect(sx, sy, sw, th, 4.0f * s,
+                          render::RgbaF(0.06f, 0.06f, 0.06f, 0.88f));
+        render::Text(sub, sx, sy, sw, th, ts, theme::kOff, ALIGN_CENTER, false);
+    }
+}
 
 void DrawHud() {
+    // 面板里的鼠标指针一律用系统光标，不自绘。
+    //
+    // 这里原来有一个 DrawSoftwareCursor()，会画一个箭头形状的多边形。它带来两个问题：
+    //   1) 系统光标可见时会和它叠成"两个光标一起动"；
+    //   2) 形状和大小跟真实光标不一致，点起来总觉得对不上。
+    // 现在改成：面板打开时由覆盖层把系统光标"推"成可见（见 overlay.cpp 的
+    // SetSystemCursor），面板里直接使用真实光标。这样位置天然一致、手感也一致。
+    g_hud_hit_count = 0;
     const float s = g_s;
 
     // FPS：位置/缩放/透明度/颜色/背景全读模块自己的参数，没调过就用原版出厂值
@@ -1197,13 +1564,14 @@ void DrawHud() {
         const float th = ts * 1.4f;
         float bx = L.x;
         float by = L.y;
-        ClampHudBox(&bx, &by, tw, th);
+        if (!g_hud_edit) ClampHudBox(&bx, &by, tw, th);   // 编辑中不钳，否则拖到边上会粘住
         if (L.bg) {
             render::RoundRect(bx - 2.0f * s, by, tw + 4.0f * s, th, 2.0f * s,
                               render::RgbaF(0.0f, 0.0f, 0.0f, L.bg_alpha * L.alpha));
         }
         render::Text(buf, bx, by, tw, th, ts, render::RgbaF(L.r, L.g, L.b, L.alpha),
                      ALIGN_LEFT, true);
+        HudEditBox(fps_idx, bx, by, tw, th, false);
     }
 
     // CPS：同上（Python 里 CPS.posx=0.67708、posy=0.94753，屏幕底部偏右）。
@@ -1217,13 +1585,14 @@ void DrawHud() {
         const float th = ts * 1.4f;
         float bx = L.x;
         float by = L.y;
-        ClampHudBox(&bx, &by, tw, th);
+        if (!g_hud_edit) ClampHudBox(&bx, &by, tw, th);   // 编辑中不钳，否则拖到边上会粘住
         if (L.bg) {
             render::RoundRect(bx - 2.0f * s, by, tw + 4.0f * s, th, 2.0f * s,
                               render::RgbaF(0.0f, 0.0f, 0.0f, L.bg_alpha * L.alpha));
         }
         render::Text(buf, bx, by, tw, th, ts, render::RgbaF(L.r, L.g, L.b, L.alpha),
                      ALIGN_LEFT, true);
+        HudEditBox(cps_idx, bx, by, tw, th, false);
     }
 
     // ArrayList：已开启功能列表。
@@ -1246,6 +1615,10 @@ void DrawHud() {
         const float vh = (float)render::Height();
         float ry = L.y;
         int row = 0;
+        // 整块列表的包围盒（编辑模式拖拽要用）：右边界固定是 posx，
+        // 左边界取所有行里最靠左的那条，宽度自然就是最长的那一行。
+        float ux0 = L.x;
+        float uy1 = L.y;
         for (int i = 0; i < kFeatureCount; ++i) {
             if (!cfg::ModuleOn(i)) continue;
             if (i == arr_idx) continue;
@@ -1255,6 +1628,7 @@ void DrawHud() {
             const float box_w = tw + 12.0f * s * L.scale;
             float bx = L.x - box_w;
             if (bx < 0.0f) bx = 0.0f;
+            if (bx < ux0) ux0 = bx;
 
             D2D1_COLOR_F col;
             if (mode == 0) {
@@ -1271,7 +1645,11 @@ void DrawHud() {
             render::Rect(bx + box_w - 2.0f * s, ry, 2.0f * s, row_h, col);
             render::Text(name, bx, ry, box_w - 6.0f * s, row_h, ts, col, ALIGN_RIGHT, false);
             ry += stride;
+            uy1 = ry - (stride - row_h);
             ++row;
+        }
+        if (row > 0) {
+            HudEditBox(arr_idx, ux0, L.y, L.x - ux0, uy1 - L.y, true);
         }
     }
 
@@ -1304,11 +1682,14 @@ void DrawHud() {
         const float viewH2 = (float)render::Height();
         float bx = FeatParamUser(ks_idx, L"posx", 0.25677f) * viewW2;
         float by = FeatParamUser(ks_idx, L"posy", 0.775f) * viewH2;
-        // 钳在屏幕里：用户把位置拖到边上时别让按键块跑出去
-        if (bx > viewW2 - totalW - pad) bx = viewW2 - totalW - pad;
-        if (by > viewH2 - totalH - pad) by = viewH2 - totalH - pad;
-        if (bx < pad) bx = pad;
-        if (by < pad) by = pad;
+        // 钳在屏幕里：用户把位置拖到边上时别让按键块跑出去。
+        // 编辑模式下不钳 —— 钳了会让拖拽算出的 px 和实际绘制位置打架，表现是"拖到边上粘住"。
+        if (!g_hud_edit) {
+            if (bx > viewW2 - totalW - pad) bx = viewW2 - totalW - pad;
+            if (by > viewH2 - totalH - pad) by = viewH2 - totalH - pad;
+            if (bx < pad) bx = pad;
+            if (by < pad) by = pad;
+        }
 
         if (FeatParamUser(ks_idx, L"bg", 0.0f) > 0.5f) {
             float ba = FeatParamUser(ks_idx, L"bg_alpha", 0.3f);
@@ -1346,8 +1727,12 @@ void DrawHud() {
             render::Text(boxes[i].label, x, yy, w, box, 9.0f * s * ksc,
                          down ? theme::kHeadBg : idle_txt, ALIGN_CENTER, false);
         }
+        HudEditBox(ks_idx, bx, by, totalW, totalH, false);
     }
 
+    // 拖动/复位按这个帧登记到的盒子来判定，所以必须在所有元素画完之后跑
+    HudEditInput();
+    DrawHudEditHint();
     DrawNotifications();
 }
 
@@ -1362,7 +1747,15 @@ void HandleHotkeys() {
         ULONGLONG now = GetTickCount64();
         if (now >= g_toggle_guard_at) {
             g_toggle_guard_at = now + 280;
-            SetVisible(!g_visible);
+            if (g_hud_edit) {
+                // 编辑模式下的热键是"退出"，不是开面板：否则会一边拖 HUD
+                // 一边把面板盖上来，两套交互叠在一起。
+                SetHudEdit(false);
+                PushToast(cfg::Chinese() ? L"\u5DF2\u9000\u51FA HUD \u5E03\u5C40"
+                                         : L"HUD layout off");
+            } else {
+                SetVisible(!g_visible);
+            }
         }
     }
 
@@ -1382,28 +1775,55 @@ void HandleHotkeys() {
         }
     }
 
-    // 绑定捕获
+    // ── 绑定捕获 ────────────────────────────────────────────────
+    // 点参数行里的「功能快捷键」进入，按任意键完成，Delete / Esc 取消。
+    // 之前这里有两个真 bug：
+    //   1) input::NewFrame 把 ESC 从捕获队列里过滤掉了，所以
+    //      "if (vk == VK_ESCAPE) 取消绑定" 是永远进不去的死分支；
+    //   2) 绑完没有 return，同一次按下的键继续走到下面的模块快捷键循环，
+    //      于是"绑好 K" 的瞬间模块还被顺手切了一次。
     if (g_bind_target >= 0) {
-        int vk = input::TakePressedKey();
+        const int vk = input::TakePressedKey();
         if (vk != 0) {
-            if (vk == VK_ESCAPE) {
-                cfg::SetModuleBind(g_bind_target, 0);
+            const int fi = g_bind_target;
+            wchar_t msg[96];
+            if (vk == VK_DELETE || vk == VK_ESCAPE) {
+                cfg::SetModuleBind(fi, 0);
+                swprintf_s(msg, L"%ls \u00B7 \u5DF2\u53D6\u6D88\u7ED1\u5B9A", FeatName(fi));
+                LogLine("[gui] bind cleared: %ls", kFeatures[fi].en);
             } else {
-                cfg::SetModuleBind(g_bind_target, vk);
+                // 同一个键已经绑给别人时先摘掉旧的，否则按一下会同时切两个模块，
+                // 而且用户根本看不出来是哪一个在捣鬼。
+                for (int i = 0; i < kFeatureCount; ++i) {
+                    if (i != fi && cfg::ModuleBind(i) == vk) cfg::SetModuleBind(i, 0);
+                }
+                cfg::SetModuleBind(fi, vk);
+                swprintf_s(msg, L"%ls \u00B7 \u7ED1\u5B9A %ls", FeatName(fi), BindKeyName(vk));
+                LogLine("[gui] bind %ls -> vk=0x%02X", kFeatures[fi].en, vk);
             }
+            PushToast(msg);
             g_bind_target = -1;
+            g_bind_guard_at = GetTickCount64() + 300;
         }
+        // 等键期间不要再往下走，否则这次按下的键会被当模块快捷键消费掉
+        return;
     }
 
     // 模块快捷键。
     // 搜索框有焦点时全部屏蔽 —— 否则在框里打一个字母，绑了那个键的模块就被切了。
     if (g_search_focus) return;
+    // 游戏不在前台时不响应：GetAsyncKeyState 是全局的，在别的窗口打字
+    // （尤其绑了字母键的模块）会把功能一路开关，看着像自己乱跳。
+    if (!GameForeground()) return;
+    if (GetTickCount64() < g_bind_guard_at) return;
+    const int clickgui_idx = FindFeatureByName(L"ClickGui");
     for (int i = 0; i < kFeatureCount; ++i) {
-        int vk = cfg::ModuleBind(i);
+        const int vk = cfg::ModuleBind(i);
         if (vk == 0) continue;
-        if (input::KeyPressed(vk) && i != FindFeatureByName(L"ClickGui")) {
-            if (!kFeatures[i].action) cfg::SetModuleOn(i, !cfg::ModuleOn(i));
-        }
+        if (i == clickgui_idx) continue;
+        if (!input::KeyPressed(vk)) continue;
+        // action 类模块（AutoFish 之类）没有开关语义，别绑了就以为能触发
+        if (!kFeatures[i].action) cfg::SetModuleOn(i, !cfg::ModuleOn(i));
     }
 }
 
@@ -1442,18 +1862,25 @@ void Shutdown() {
     cfg::Save();
 }
 
-void Toggle() { SetVisible(!g_visible); }
+// 对外只留一个开关入口。编辑模式开着时按热键应该是"退出布局"，
+// 不是把面板盖到布局界面上。
+void Toggle() {
+    if (g_hud_edit) {
+        SetHudEdit(false);
+        return;
+    }
+    SetVisible(!g_visible);
+}
 
 bool Visible() { return g_visible; }
 
 void SetVisible(bool v) {
     if (g_visible == v) return;
     g_visible = v;
-    input::SetCapture(v && cfg::BlockInput());
     // 这里以前会 while (ShowCursor(...)) 把进程的显示计数往两头推。
     // 这个 DLL 注入在游戏进程里，显示计数和游戏是共用的 —— 推一次之后
     // 游戏自己那一次 ShowCursor 根本拉不回来，光标就长期处于错误状态。
-    // 现在完全不碰显示计数：光标显不显示交给游戏，我们只在看不见时自绘一个。
+    // 现在完全不碰显示计数：面板打开时由 overlay 的 SetSystemCursor 统一管。
     if (!v) {
         g_bind_target = -1;
         g_drag_panel = -1;
@@ -1463,6 +1890,28 @@ void SetVisible(bool v) {
         g_click_used = false;
     }
     LogLine("[gui] visible=%d", v ? 1 : 0);
+}
+
+bool WantsMouse() { return g_visible || g_hud_edit; }
+
+bool HudEdit() { return g_hud_edit; }
+
+void SetHudEdit(bool v) {
+    if (g_hud_edit == v) return;
+    g_hud_edit = v;
+    g_hud_edit_guard_at = GetTickCount64() + 180;
+    if (v) {
+        // 进编辑模式就把面板侧的交互状态清干净，免得收起面板后还留着
+        // 半截拖动/等按键的状态
+        g_bind_target = -1;
+        g_search_focus = false;
+        g_drag_panel = -1;
+        g_drag_slider = -1;
+        g_drag_scrollbar = -1;
+    } else {
+        g_hud_drag = -1;
+    }
+    LogLine("[gui] hud_edit=%d", v ? 1 : 0);
 }
 
 void OnFrame() {

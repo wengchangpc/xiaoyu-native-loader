@@ -30,7 +30,17 @@ bool g_prev_key[kMaxKey] = {false};
 int g_hotkey = VK_RSHIFT;
 bool g_hotkey_pressed = false;
 
-int g_take_key = 0;
+// 本帧新按下的键排队，留给"点一下绑定快捷键"（gui 的 PK_KEYBIND 行）来取。
+//
+// 以前这里只有一个 int g_take_key，谁最后被扫到就留谁，而且 ESC 被显式排除。
+// 两个后果：
+//   1) 一帧里同时按下两个键，绑定结果取决于扫描顺序（VK 大的赢），不可预期；
+//   2) ESC 永远进不来，于是 gui 里那条 "if (vk == VK_ESCAPE) 取消绑定"
+//      的分支是死代码 —— 取消绑定实际上从来没生效过。
+// 现在改成小队列，并且不再过滤 ESC（要不要当成取消，交给消费端判断）。
+const int kKeyQueue = 4;
+int g_key_queue[kKeyQueue] = {0};
+int g_key_queue_count = 0;
 
 // 新架构下输入接管靠窗口命中测试，这里只留状态位
 bool g_capture = false;
@@ -130,6 +140,7 @@ void NewFrame() {
 
     // 键盘：只扫 8..255（0-7 是鼠标键，1/2/4 是左右中键的别名，跳过）
     g_hotkey_pressed = false;
+    g_key_queue_count = 0;
     for (int vk = 8; vk < kMaxKey; ++vk) {
         bool now = Raw(vk);
         g_key_pressed[vk] = now && !g_prev_key[vk];
@@ -137,9 +148,8 @@ void NewFrame() {
         if (g_key_pressed[vk]) {
             if (vk == g_hotkey) {
                 g_hotkey_pressed = true;
-            } else if (vk != VK_ESCAPE) {
-                // 留给"点一下绑定快捷键"
-                g_take_key = vk;
+            } else if (g_key_queue_count < kKeyQueue) {
+                g_key_queue[g_key_queue_count++] = vk;
             }
         }
         g_prev_key[vk] = now;
@@ -173,8 +183,11 @@ bool KeyPressed(int vk) {
 }
 
 int TakePressedKey() {
-    int k = g_take_key;
-    g_take_key = 0;
+    if (g_key_queue_count <= 0) return 0;
+    const int k = g_key_queue[0];
+    for (int i = 1; i < g_key_queue_count; ++i) g_key_queue[i - 1] = g_key_queue[i];
+    --g_key_queue_count;
+    g_key_queue[g_key_queue_count] = 0;
     return k;
 }
 

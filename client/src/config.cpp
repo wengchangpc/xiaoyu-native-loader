@@ -372,6 +372,16 @@ bool ParamIsSet(int index) {
     return g_has[index] != 0;
 }
 
+void ClearParam(int index) {
+    if (index < 0 || index >= (int)g_has.size()) return;
+    if (g_has[index] == 0) return;
+    // 把"用户显式设过"的标记摘掉就够了：值本身没人读（ParamValue 会回落到
+    // ParamDefault），Save() 也只写 g_has 为真的项，下次落盘这一行就消失了。
+    g_has[index] = 0;
+    g_val[index] = 0.0f;
+    MarkDirty();
+}
+
 bool HudEnabled(int feature_index) { return ModuleOn(feature_index); }
 
 void SetHudEnabled(int feature_index, bool on) { SetModuleOn(feature_index, on); }

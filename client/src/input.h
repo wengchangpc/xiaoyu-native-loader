@@ -40,7 +40,9 @@ bool Released(int btn);
 bool KeyDown(int vk);
 bool KeyPressed(int vk);
 
-// 只取一次：取完清掉，用于"点一下绑定快捷键"
+// 取本帧新按下的一个键，取完从队列里弹掉。用于"点一下绑定快捷键"。
+// 一帧内多个键按队列顺序返回（不再是谁 VK 大谁赢），队列空了返回 0。
+// ESC / Delete 也会被正常返回，是否当成"取消绑定"由调用方决定。
 int TakePressedKey();
 
 void SetHotkey(int vk);

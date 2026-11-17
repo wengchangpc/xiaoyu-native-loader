@@ -35,6 +35,9 @@ void SetParamValue(int index, float v);
 // 会让颜色变成灰、位置跑到屏幕正中。HUD 那边要靠它区分"用户调过"和"没动过"。
 bool ParamIsSet(int index);
 
+// 把显式值删掉，回到出厂默认（HUD 拖动界面的右键复位用它）。
+void ClearParam(int index);
+
 // 面板位置（用户拖过才有效）
 bool PanelPos(int group, float* x, float* y, bool* collapsed);
 void SetPanelPos(int group, float x, float y, bool collapsed);

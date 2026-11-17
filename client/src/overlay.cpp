@@ -333,10 +333,12 @@ void SetSystemCursor(bool want) {
     }
 }
 
-// 面板可见性变化时切换命中测试模式
+// 面板 / HUD 编辑模式可见性变化时切换命中测试模式。
+// 注意判据是 WantsMouse() 而不是 Visible()：HUD 编辑模式下面板是收起的，
+// 但鼠标仍然得归我们，否则视角跟着鼠标转、光标也还是隐藏的，根本拖不动。
 void UpdateInputMode() {
     if (g_overlay == nullptr) return;
-    bool want = gui::Visible();
+    bool want = gui::WantsMouse();
     if (want == g_interactive) return;
     g_interactive = want;
 
@@ -396,7 +398,8 @@ void FollowGameWindow() {
         // 游戏一失焦就会弹出它自己的 Esc 菜单。这时候面板必须一起收起，
         // 否则回到游戏时面板和暂停菜单会同时压着，而且面板还占着"接管鼠标"
         // 的状态（视角冻结、点击被我们吞掉），看起来就像游戏卡死了。
-        if (gui::Visible()) {
+        if (gui::WantsMouse()) {
+            gui::SetHudEdit(false);   // 人不在游戏里，布局模式也一起退掉
             gui::SetVisible(false);
             LogLine("[overlay] 游戏失去前台，面板自动收起");
         }
@@ -609,9 +612,10 @@ int OverlayMain() {
         // 光标锁定的唯一决策点：每轮都跑，条件不满足就立刻解锁。
         // 绝对不要挪进下面 if (g_visible) 里面 —— 游戏一进后台那个分支
         // 就不执行了，ClipCursor 会一直残留，用户整个桌面的光标都被困住。
-        UpdateCursorClip(g_visible && gui::Visible());
-        // 系统光标同理：只有面板开着才需要它可见，其余情况把显示计数还回去
-        SetSystemCursor(g_visible && gui::Visible());
+        UpdateCursorClip(g_visible && gui::WantsMouse());
+        // 系统光标同理：面板或 HUD 布局模式开着才需要它可见，
+        // 其余情况把显示计数还回去
+        SetSystemCursor(g_visible && gui::WantsMouse());
 
         if (g_visible) {
             // 注意：不要在这里调 input::NewFrame()。
@@ -620,7 +624,7 @@ int OverlayMain() {
             UpdateInputMode();
             // 面板打开期间每秒重申一次鼠标归属：有些引擎发现鼠标设备变化
             // 会自己重新注册 Raw Input，把我们的冻结顶掉
-            if (gui::Visible()) {
+            if (gui::WantsMouse()) {
                 const ULONGLONG now = GetTickCount64();
                 if (now >= g_raw_reassert_at) {
                     g_raw_reassert_at = now + 1000;
@@ -692,13 +696,13 @@ int OverlayMain() {
             ULONGLONG now = GetTickCount64();
             if (now - last_report > 30000) {
                 last_report = now;
-                LogLine("[overlay] alive, %dx%d gui=%d mouse=(%.0f,%.0f)",
+                LogLine("[overlay] alive, %dx%d gui=%d hudedit=%d mouse=(%.0f,%.0f)",
                         render::Width(), render::Height(), gui::Visible() ? 1 : 0,
-                        input::X(), input::Y());
+                        gui::HudEdit() ? 1 : 0, input::X(), input::Y());
             }
 
-            // 面板开着按 60fps 刷，收起时 20fps 省开销
-            next_frame += gui::Visible() ? 16 : 50;
+            // 面板或布局模式开着按 60fps 刷，其余时候 20fps 省开销
+            next_frame += gui::WantsMouse() ? 16 : 50;
             now = GetTickCount64();
             if (next_frame > now) {
                 DWORD wait = (DWORD)(next_frame - now);

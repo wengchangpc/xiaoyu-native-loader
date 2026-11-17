@@ -45,11 +45,13 @@ float ParamOf(int fi, const wchar_t* attr, float def) {
     return def;
 }
 
-// 模块是否真的该干活：开关打开 + 面板收起
+// 模块是否真的该干活：开关打开 + 面板/HUD 编辑模式收起
 bool Active(int fi) {
     if (fi < 0) return false;
     if (!cfg::ModuleOn(fi)) return false;
-    if (gui::Visible()) return false;
+    // 用 WantsMouse 而不是 Visible：HUD 布局模式下也不该继续合成点击，
+    // 否则拖元素的时候 AC/NoThrowDelay 会在背后一直往游戏里灌鼠标事件
+    if (gui::WantsMouse()) return false;
     return true;
 }
 
@@ -568,9 +570,9 @@ void Tick() {
         seeded = true;
         srand((unsigned)GetTickCount64());
     }
-    // 面板一打开就立刻停手：我们的合成点击会激活游戏窗口，
-    // 前台被抢回去之后面板就点不动了。
-    if (gui::Visible()) {
+    // 面板或 HUD 布局模式一打开就立刻停手：我们的合成点击会激活游戏窗口，
+    // 前台被抢回去之后面板就点不动了；布局模式下还会跟拖拽抢鼠标。
+    if (gui::WantsMouse()) {
         input::SetPhysicalWanted(false);   // 面板打开时把钩子摘掉，别让输入多绕一圈
         input::SetPhysicalKeyWanted(false);
         ReleaseAll();
