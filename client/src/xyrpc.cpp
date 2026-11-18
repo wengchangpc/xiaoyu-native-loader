@@ -8,7 +8,7 @@
 //   调一个参数要等半天。排查 ESP 对齐的时候需要的是"立刻问一句、立刻改一下"。
 //   而且脚本通过这里的 read 命令拿数据，实际读内存的是 DLL 自己 ——
 //   外部进程反复 ReadProcessMemory 会被反作弊杀掉，这条路绕开了那个特征。
-#include "rpc.h"
+#include "xyrpc.h"
 
 #include <windows.h>
 

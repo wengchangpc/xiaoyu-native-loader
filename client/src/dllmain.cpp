@@ -25,7 +25,7 @@
 #include "log.h"
 #include "memory.h"
 #include "probe.h"
-#include "rpc.h"
+#include "xyrpc.h"
 #include "self.h"
 
 namespace xiaoyu {

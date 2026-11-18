@@ -32,7 +32,7 @@
 #include "input.h"
 #include "log.h"
 #include "render.h"
-#include "rpc.h"
+#include "xyrpc.h"
 
 namespace xiaoyu {
 namespace {

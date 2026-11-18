@@ -12,7 +12,7 @@
 #include "bridge.h"
 #include "input.h"
 #include "log.h"
-#include "rpc.h"
+#include "xyrpc.h"
 
 namespace xiaoyu {
 
