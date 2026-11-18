@@ -30,6 +30,8 @@ add_library(xiaoyu_client SHARED
     src/memory.cpp
     src/probe.cpp
     src/render.cpp
+    src/rpc.cpp
+    src/self.cpp
     src/config.cpp
     src/gui.cpp
     src/modules.cpp

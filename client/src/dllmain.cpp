@@ -25,6 +25,8 @@
 #include "log.h"
 #include "memory.h"
 #include "probe.h"
+#include "rpc.h"
+#include "self.h"
 
 namespace xiaoyu {
 void StartOverlay();
@@ -79,6 +81,12 @@ DWORD WINAPI BootThread(LPVOID param) {
     // 文件不需要任何权限，也就不再需要人守着点 UAC。
     xiaoyu::bridge::Start();
 
+    // 进程内命令通道（命名管道 \\.\pipe\xiaoyu_rpc）。
+    // 有了它，"读内存 / 枚举实体 / 画框 / 改 ESP 参数"都变成一行命令，
+    // 外部脚本连上就能用 —— 不用再往 run.bat 丢文件、等 500ms 轮询、
+    // 再去翻日志。调 ESP 对齐这种活，一轮从几秒压到几十毫秒。
+    xiaoyu::rpc::Start();
+
     // 进程内自诊断（历史阶段，现在默认不跑）：
     //   probe.cpp    走 RTTI 链定位 ClientInstance / LocalPlayer，写 probe.log
     //   explorer.cpp 全堆扫实体 + 反查容器，写 explorer.log
@@ -103,6 +111,9 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID reserved) {
     (void)reserved;
     if (reason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(hModule);
+        // 记下自己是谁：卸载（FreeLibraryAndExitThread）要用。
+        // 这一步只是存一个指针，可以放在 loader lock 里。
+        xiaoyu::self::SetModule(hModule);
         // DllMain 在 loader lock 里，不能建 D3D 设备
         HANDLE th = CreateThread(nullptr, 0, BootThread, nullptr, 0, nullptr);
         if (th != nullptr) {

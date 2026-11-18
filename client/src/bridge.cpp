@@ -21,6 +21,10 @@ const wchar_t* kOutPath = L"C:\\Xiaoyu\\bridge.log";
 FILE* g_pf = nullptr;
 volatile LONG g_started = 0;
 volatile LONG g_exec_count = 0;
+volatile LONG g_stop = 0;
+// 正在跑子进程。硬卸载前必须确认它是 0：否则子进程结束时会把控制权
+// 交回一段已经被 FreeLibrary 释放掉的代码，直接崩进程。
+volatile LONG g_busy = 0;
 
 void POpen() {
     if (g_pf != nullptr) return;
@@ -44,6 +48,8 @@ void P(const char* fmt, ...) {
 
 // 执行 run.bat。返回 true 表示确实跑了一次。
 bool RunOnce() {
+    InterlockedExchange(&g_busy, 1);
+
     STARTUPINFOW si;
     PROCESS_INFORMATION pi;
     ZeroMemory(&si, sizeof(si));
@@ -65,6 +71,7 @@ bool RunOnce() {
         P("CreateProcess 失败 err=%lu", (unsigned long)err);
         // 失败了也要把文件挪走，否则会每 500ms 重试一次，刷爆日志
         MoveFileExW(kCmdPath, kDonePath, MOVEFILE_REPLACE_EXISTING);
+        InterlockedExchange(&g_busy, 0);
         return false;
     }
 
@@ -85,6 +92,7 @@ bool RunOnce() {
 
     MoveFileExW(kCmdPath, kDonePath, MOVEFILE_REPLACE_EXISTING);
     InterlockedIncrement(&g_exec_count);
+    InterlockedExchange(&g_busy, 0);
     return true;
 }
 
@@ -96,12 +104,15 @@ DWORD WINAPI ThreadProc(LPVOID param) {
     P("用法：往 C:\\Xiaoyu\\run.bat 写一个 bat，本线程会以游戏进程的权限执行它");
 
     for (;;) {
+        if (InterlockedCompareExchange(&g_stop, 0, 0) != 0) break;
         const DWORD attr = GetFileAttributesW(kCmdPath);
         if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY) == 0) {
             RunOnce();
         }
-        Sleep(500);
+        // 500 -> 100ms：runpy 这条链路希望脚本尽快起来；轮询本身几乎不耗 CPU
+        Sleep(100);
     }
+    P("命令通道已停止");
     return 0;
 }
 
@@ -109,9 +120,25 @@ DWORD WINAPI ThreadProc(LPVOID param) {
 
 void Start() {
     if (InterlockedExchange(&g_started, 1) != 0) return;
-    HANDLE th = CreateThread(nullptr, 0, &ThreadProc, nullptr, 0, nullptr);
-    if (th != nullptr) CloseHandle(th);
+    g_thread = CreateThread(nullptr, 0, &ThreadProc, nullptr, 0, nullptr);
 }
+
+// 必须等线程真的退出。硬卸载（FreeLibrary）之后如果这个线程还在
+// Sleep 里，它醒过来就会跳到已释放的代码段上，直接崩进程。
+void Stop() {
+    InterlockedExchange(&g_stop, 1);
+    if (g_thread != nullptr) {
+        WaitForSingleObject(g_thread, 3000);
+        CloseHandle(g_thread);
+        g_thread = nullptr;
+    }
+}
+
+void Stop() {
+    InterlockedExchange(&g_stop, 1);
+}
+
+bool Busy() { return InterlockedCompareExchange(&g_busy, 0, 0) != 0; }
 
 int ExecCount() { return (int)g_exec_count; }
 

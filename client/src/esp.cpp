@@ -24,11 +24,22 @@
 //            focal = (H/2) / tan(vfov/2)
 //
 // ── FOV ────────────────────────────────────────────────────────
-// 拿不到游戏里的 FOV 设置，所以先在 C:\Xiaoyu\native_config.txt 里配：
+// 参数在 C:\Xiaoyu\esp.ini（独立的 ini，不塞进 native_config.txt ——
+// 那个文件由 cfg::Save() 全量重写，自定义段会被丢掉）：
 //     [esp]
 //     fov=70
-// 默认 70（垂直）。配错了不会「框乱飞」，只会让屏幕边缘的框偏一点 ——
-// 因为投影中心是对的，误差随偏离屏幕中心的角度增大。
+//     eye_offset=0
+// 默认 70（垂直）**只是猜的**。填错的表现很典型：所有框从屏幕中心向外
+// 等比放大/缩小 —— 中心附近看着还行，越靠屏幕边缘偏得越多。因为投影
+// 中心永远是对的，误差只随偏离中心的角度增长。
+// 拿到真值的办法（不用重编译）：连管道发 scanfov，扫 Options 里的 float，
+// 再用 fov <数值> 实时覆盖。
+//
+// ── 几何（2026-11-18 用 AABB 实测校正）────────────────────────
+//   mPos（Actor+0xCE0 / StateVectorComponent::mPos）**是眼睛位置**，
+//   不是脚底。AABB 的 min.y 才是脚底，且站在地面上时是整数。
+//   所以：相机原点 = mPos 直接用；框 = UAABBShapeComponent 的 min/max。
+//   两处都用实测值之后，怪物/掉落物/潜行玩家各自画各自的真实碰撞箱。
 #include "esp.h"
 
 #include <windows.h>
@@ -60,6 +71,13 @@ const wchar_t* kIniPath = L"C:\\Xiaoyu\\esp.ini";
 int g_last_drawn = 0;
 int g_last_actors = 0;
 
+// 运行期覆盖。管道（rpc）改这三个值，调对齐时不用重注入。
+// 用 volatile 是因为写它们的是管道线程、读的是覆盖层渲染线程。
+// 对齐的 4 字节读写本身就是原子的，不需要额外加锁。
+volatile LONG g_force = -1;         // -1 听配置  0 强制关  1 强制开
+volatile LONG g_fov_override = 0;   // 0 = 用 esp.ini
+volatile float g_eye_override = 0;  // <=0 = 用 esp.ini
+
 // ── 目录查询（和 modules.cpp 里那套一致，不跨文件引用它的匿名命名空间）──
 int FindFeature(const wchar_t* en) {
     for (int i = 0; i < kFeatureCount; ++i) {
@@ -88,6 +106,10 @@ bool ParamOn(int fi, const wchar_t* attr) {
 // 画面对齐，反复重注入太慢，所以改成每 2 秒重读一次，改完 native_config.txt
 // 两秒内就能在屏幕上看到效果。
 int FovDeg() {
+    // 管道设过就直接用，绕开 ini 和 2 秒缓存 —— 调对齐时要的是"立刻生效"
+    const int ov = (int)g_fov_override;
+    if (ov >= 20 && ov <= 140) return ov;
+
     static int v = 70;
     static ULONGLONG last = 0;
     const ULONGLONG now = GetTickCount64();
@@ -100,18 +122,25 @@ int FovDeg() {
     return v;
 }
 
-// 眼睛高度同理会随潜行变化（1.62 -> 1.27）。拿不到潜行标志之前先做成可配，
-// 以后拿到 UOnGroundFlagComponent 之类的再自动切。
-float EyeHeight() {
-    static float v = 1.62f;
+// 相机原点的**额外偏移**（不是眼睛高度）。
+//
+// mPos 本身就是眼睛位置，所以这里默认 0。留这个口子是给"第三人称"用的：
+// 第三人称时真实相机在后面若干格，方向对但位置差一截，可以拿它做微调。
+// 也可以用来验证"mPos 到底是不是眼睛"——把它设成 ±1.62，画面应该整体上下
+// 平移而不是缩放；如果观察到的是缩放，说明相机原点取错了。
+float EyeOffset() {
+    const float ov = g_eye_override;
+    if (ov > -3.0f && ov < 3.0f && ov != 0.0f) return ov;
+
+    static float v = 0.0f;
     static ULONGLONG last = 0;
     const ULONGLONG now = GetTickCount64();
     if (last == 0 || now - last > 2000) {
         last = now;
         wchar_t buf[32] = {0};
-        GetPrivateProfileStringW(L"esp", L"eye", L"1.62", buf, 32, kIniPath);
+        GetPrivateProfileStringW(L"esp", L"eye_offset", L"0", buf, 32, kIniPath);
         const float f = (float)_wtof(buf);
-        if (f > 0.5f && f < 3.0f) v = f;
+        if (f > -3.0f && f < 3.0f) v = f;
     }
     return v;
 }
@@ -130,8 +159,9 @@ void MakeCamera(const sdk::ActorEntry& me, int w, int h, Camera* c) {
     const float cy = cosf(yaw), sy = sinf(yaw);
     const float cp = cosf(pitch), sp = sinf(pitch);
 
+    // ★ me.pos 已经是眼睛位置（见 sdk.h 里那段 mPos 反证），不要再加 1.62
     c->eye = me.pos;
-    c->eye.y += EyeHeight();
+    c->eye.y += EyeOffset();
 
     c->fx = -sy * cp;
     c->fy = -sp;
@@ -189,16 +219,30 @@ void HsvToRgb(float hh, float s, float v, float* r, float* g, float* b) {
 
 // 拉一个 8 角点的屏幕包围盒。任何一角跑到摄像机后面就先不画（会画出
 // 一条几万像素的斜线，比不画更干扰）。
-bool BoxOf(const Camera& cam, const sdk::Vec3& pos, float w, float h,
+//
+// 包围盒直接来自 UAABBShapeComponent —— 这才是实体真正的碰撞箱，
+// 怪物/掉落物/潜行玩家各不相同，写死 0.6×1.8 只对站着的玩家成立。
+bool BoxOf(const Camera& cam, const sdk::ActorEntry& e, float w, float h,
            float* x0, float* y0, float* x1, float* y1) {
-    const float hw = sdk::kPlayerWidth * 0.5f;
+    sdk::Vec3 lo, hi;
+    if (e.has_bb) {
+        lo = e.bb_min;
+        hi = e.bb_max;
+    } else {
+        // 兜底：按玩家尺寸推。★ pos 是眼睛，脚底要减掉眼高。
+        const float hw = sdk::kPlayerWidth * 0.5f;
+        const float feet = e.pos.y - sdk::kEyeHeight;
+        lo.x = e.pos.x - hw; lo.y = feet;                       lo.z = e.pos.z - hw;
+        hi.x = e.pos.x + hw; hi.y = feet + sdk::kPlayerHeight;  hi.z = e.pos.z + hw;
+    }
+
     float minx = 1e9f, miny = 1e9f, maxx = -1e9f, maxy = -1e9f;
     for (int i = 0; i < 8; ++i) {
-        const float ox = (i & 1) ? hw : -hw;
-        const float oy = (i & 2) ? sdk::kPlayerHeight : 0.0f;
-        const float oz = (i & 4) ? hw : -hw;
+        const float px = (i & 1) ? hi.x : lo.x;
+        const float py = (i & 2) ? hi.y : lo.y;
+        const float pz = (i & 4) ? hi.z : lo.z;
         float sx = 0.0f, sy = 0.0f;
-        if (!Project(cam, pos.x + ox, pos.y + oy, pos.z + oz, w, h, &sx, &sy)) {
+        if (!Project(cam, px, py, pz, w, h, &sx, &sy)) {
             return false;
         }
         if (sx < minx) minx = sx;
@@ -241,6 +285,15 @@ void Why(const char* fmt, ...) {
 int LastDrawn() { return g_last_drawn; }
 int LastActors() { return g_last_actors; }
 
+void SetForce(int v) { InterlockedExchange(&g_force, (LONG)v); }
+int Force() { return (int)InterlockedCompareExchange(&g_force, 0, 0); }
+
+void SetFovOverride(int deg) { InterlockedExchange(&g_fov_override, (LONG)deg); }
+int FovOverride() { return (int)InterlockedCompareExchange(&g_fov_override, 0, 0); }
+
+void SetEyeOverride(float h) { g_eye_override = h; }
+float EyeOverride() { return g_eye_override; }
+
 void Render() {
     const int fi = FindFeature(L"ESP");
     if (fi < 0) {
@@ -258,14 +311,20 @@ void Render() {
             nm[k] = (char)kFeatures[fi].en[k];
         }
         const int ac = FindFeature(L"AC");
-        LogLine("[esp] diag fi=%d en=%s on=%d | AC=%d on=%d | kFeatureCount=%d",
-                fi, nm, cfg::ModuleOn(fi) ? 1 : 0, ac,
+        LogLine("[esp] diag fi=%d en=%s on=%d force=%d | AC=%d on=%d | kFeatureCount=%d",
+                fi, nm, cfg::ModuleOn(fi) ? 1 : 0, (int)g_force, ac,
                 (ac >= 0 && cfg::ModuleOn(ac)) ? 1 : 0, kFeatureCount);
     }
 
-    if (!cfg::ModuleOn(fi)) {
+    // 管道可以强制开关：调对齐时要频繁 A/B，改配置得重注入，太慢。
+    const int force = (int)g_force;
+    if (force == 0) {
         g_last_drawn = 0;
-        Why("模块开关是关的（配置里写 m.ESP=1 再注入一个新实例）");
+        return;
+    }
+    if (force != 1 && !cfg::ModuleOn(fi)) {
+        g_last_drawn = 0;
+        Why("模块开关是关的（配置里写 m.ESP=1，或用管道 esp 1 强制打开）");
         return;
     }
 
@@ -321,6 +380,14 @@ void Render() {
     const D2D1_COLOR_F text_dim = render::Rgba(210, 210, 210, 190);
 
     int drawn = 0;
+    // 最近的那个玩家单独记一份：调投影对齐的时候，唯一有意义的对照就是
+    // 「日志里算出来的框」vs「截图里人身上真实的框」，两个数字并排放才能解方程。
+    float near_dist = 1e9f;
+    float nb[4] = {0, 0, 0, 0};
+    float near_bb[3] = {0, 0, 0};
+    sdk::Vec3 near_pos = {0, 0, 0};
+    int near_idx = -1;
+
     for (int i = 0; i < n; ++i) {
         const sdk::ActorEntry& e = actors[i];
         if (e.actor == lp) continue;
@@ -335,7 +402,7 @@ void Render() {
         if (dist > max_dist) continue;
 
         float x0 = 0, y0 = 0, x1 = 0, y1 = 0;
-        if (!BoxOf(cam, e.pos, (float)w, (float)h, &x0, &y0, &x1, &y1)) continue;
+        if (!BoxOf(cam, e, (float)w, (float)h, &x0, &y0, &x1, &y1)) continue;
 
         // 完全在屏幕外就跳过（留一点余量，避免边缘闪烁）
         if (x1 < -64.0f || x0 > (float)w + 64.0f) continue;
@@ -359,18 +426,42 @@ void Render() {
                      render::ALIGN_CENTER, false);
 
         ++drawn;
+        if (dist < near_dist) {
+            near_dist = dist;
+            nb[0] = x0; nb[1] = y0; nb[2] = x1; nb[3] = y1;
+            near_bb[0] = e.has_bb ? (e.bb_max.x - e.bb_min.x) : 0.0f;
+            near_bb[1] = e.has_bb ? (e.bb_max.y - e.bb_min.y) : 0.0f;
+            near_bb[2] = e.has_bb ? (e.bb_max.z - e.bb_min.z) : 0.0f;
+            near_pos = e.pos;
+            near_idx = i;
+        }
     }
     g_last_drawn = drawn;
+
+    // bb = 有多少个实体读到了可信的 AABB。这个数字明显小于 actors 就说明
+    // AABB 段的下标没对齐（或者 storage 换了偏移），框会退回写死的 0.6×1.8。
+    int with_bb = 0;
+    for (int i = 0; i < n; ++i) {
+        if (actors[i].has_bb) ++with_bb;
+    }
 
     // 限流日志：ESP 不出框的时候，这三行数字能直接定位是哪一段断了。
     static ULONGLONG last = 0;
     const ULONGLONG now = GetTickCount64();
     if (now - last > 3000) {
         last = now;
-        LogLine("[esp] actors=%d drawn=%d pos=(%.1f,%.1f,%.1f) yaw=%.1f pitch=%.1f "
-                "fov=%d screen=%dx%d",
-                n, drawn, me->pos.x, me->pos.y, me->pos.z, me->yaw, me->pitch,
-                FovDeg(), w, h);
+        LogLine("[esp] actors=%d bb=%d drawn=%d eye=(%.2f,%.2f,%.2f) yaw=%.1f pitch=%.1f "
+                "fov=%d off=%.2f focal=%.1f screen=%dx%d",
+                n, with_bb, drawn, me->pos.x, me->pos.y, me->pos.z, me->yaw, me->pitch,
+                FovDeg(), EyeOffset(), cam.focal, w, h);
+        if (near_idx >= 0) {
+            LogLine("[esp] 最近体 #%d cls=%s pos=(%.2f,%.2f,%.2f) d=%.2f "
+                    "bb=%.2fx%.2fx%.2f box=(%.1f,%.1f)-(%.1f,%.1f) %.0fx%.0f",
+                    near_idx, sdk::ClassNameOf(actors[near_idx].actor),
+                    near_pos.x, near_pos.y, near_pos.z, near_dist,
+                    near_bb[0], near_bb[1], near_bb[2],
+                    nb[0], nb[1], nb[2], nb[3], nb[2] - nb[0], nb[3] - nb[1]);
+        }
     }
 }
 

@@ -454,18 +454,46 @@ constexpr uintptr_t kOffStorageSegVec = 0x0050;        // 元素（裸数组）�
 constexpr size_t kRotStride = 0x10;   // { Vec2 mRot; Vec2 mRotPrev; }
 constexpr size_t kStateVecStride = 0x30;  // { Vec3 pos; Vec3 prev; Vec3 vel; }
 
-// 玩家眼睛相对脚底的高度（站立 1.62，潜行 1.27）。ESP 的投影原点用它。
-constexpr float kEyeHeight = 1.62f;
-// 玩家碰撞箱（玩家固定 0.6 x 1.8）
+// AABB 组件。和 rotation / statevector 在**同一个 registry**，下标直接互通。
+// 布局实测（步长 0x20）：
+//     +0x00  Vec3 min        +0x0C  Vec3 max
+//     +0x18  float width     +0x1C  float height
+constexpr uintptr_t kOffAabbStorage = 0x0520;
+constexpr size_t kAabbStride = 0x20;
+
+// ══════════════════════════════════════════════════════════════════
+// ★ mPos 到底是脚底还是眼睛（2026-11-18 用 AABB 反证）
+// ══════════════════════════════════════════════════════════════════
+// 同一时刻、同一个实体的两组实测值：
+//
+//     AABB   min = (-101.504, 19.000, -66.337)
+//            max = (-100.904, 20.800, -65.737)      → 0.6 × 1.8
+//     mPos   = (-101.204, 20.620, -66.037)
+//
+//   mPos 的 X/Z 正好是 AABB 的中心；Y 比 min.y 高 **1.620**，也就是标准
+//   眼睛高度。旁证：第二个远程玩家的 AABB min.y 同样是整数 19.000
+//   （站在方块顶面），mPos.y 同样是 20.620 —— 同一地面上的人眼睛高度必然
+//   一致，脚底也必然一致，而 19.000 才是方块边界。
+//
+//   ⇒ **StateVectorComponent::mPos / Actor+0xCE0 是眼睛位置，不是脚底。**
+//
+//   以前 ESP 按"脚底"处理，又给相机加了 +1.62。这两处错正好互相抵消：
+//   给相机和所有框点同时加同一个向量，投影结果完全不变。所以框能出来，
+//   但框高永远写死 1.8 —— 对怪物、掉落物、潜行的玩家全错。
+//   现在相机原点直接用 mPos，框直接用 AABB，两个都不再猜。
+constexpr float kEyeHeight = 1.62f;   // 只在 AABB 读不到时兜底
 constexpr float kPlayerWidth = 0.6f;
 constexpr float kPlayerHeight = 1.8f;
 
 struct ActorEntry {
     uintptr_t actor;
     uint32_t entity_id;
-    Vec3 pos;      // 脚底位置（= +0xCE0）
+    Vec3 pos;      // ★ 眼睛位置（0xCE0 的 mPos），**不是**脚底
+    Vec3 bb_min;   // AABB 最小角
+    Vec3 bb_max;   // AABB 最大角
     float pitch;   // 度，低头为正
     float yaw;     // 度，0=+Z，90=-X
+    bool has_bb;   // bb_min/bb_max 是否可信
 };
 
 // ── 类型名反查：vtable -> COL -> TypeDescriptor -> 名字 ──────────
@@ -554,12 +582,19 @@ inline int EnumActors(ActorEntry* out, int max, uintptr_t lp = 0) {
 
     // rotation 段：拿不到就只填位置，pitch/yaw 留 0
     uintptr_t rot_seg = 0;
+    // AABB 段：和 rotation 同一个 registry，下标一一对应
+    uintptr_t bb_seg = 0;
     const uintptr_t reg_b = mem::ReadPtr(am + kOffRotRegistry);
     if (reg_b != 0) {
         const uintptr_t rsto = mem::ReadPtr(reg_b + kOffRotStorage);
         if (rsto != 0) {
             const uintptr_t rv = mem::ReadPtr(rsto + kOffStorageSegVec);
             if (rv != 0) rot_seg = mem::ReadPtr(rv);
+        }
+        const uintptr_t bsto = mem::ReadPtr(reg_b + kOffAabbStorage);
+        if (bsto != 0) {
+            const uintptr_t bv = mem::ReadPtr(bsto + kOffStorageSegVec);
+            if (bv != 0) bb_seg = mem::ReadPtr(bv);
         }
     }
 
@@ -572,6 +607,9 @@ inline int EnumActors(ActorEntry* out, int max, uintptr_t lp = 0) {
         e.entity_id = 0;
         e.pitch = 0.0f;
         e.yaw = 0.0f;
+        e.bb_min.x = 0.0f; e.bb_min.y = 0.0f; e.bb_min.z = 0.0f;
+        e.bb_max.x = 0.0f; e.bb_max.y = 0.0f; e.bb_max.z = 0.0f;
+        e.has_bb = false;
         (void)mem::Read(pb + (size_t)i * 4, &e.entity_id);
         if (!mem::Read(a + kOffPos, &e.pos)) continue;
         if (rot_seg != 0) {
@@ -579,6 +617,22 @@ inline int EnumActors(ActorEntry* out, int max, uintptr_t lp = 0) {
             if (mem::Read(rot_seg + (size_t)i * kRotStride, rp, sizeof(rp))) {
                 e.pitch = rp[0];
                 e.yaw = rp[1];
+            }
+        }
+        if (bb_seg != 0) {
+            // 一次读 8 个 float：min.xyz / max.xyz / width / height
+            float bb[8] = {0};
+            if (mem::Read(bb_seg + (size_t)i * kAabbStride, bb, sizeof(bb))) {
+                e.bb_min.x = bb[0]; e.bb_min.y = bb[1]; e.bb_min.z = bb[2];
+                e.bb_max.x = bb[3]; e.bb_max.y = bb[4]; e.bb_max.z = bb[5];
+                // 合理性：三维跨度都得是正数且不离谱。实体被移除后 storage
+                // 里的槽位会被复用，偶尔能读到全 0 或者垃圾值，这两种都拒掉，
+                // 让调用方走写死的 0.6×1.8 兜底，而不是画出一个几十米的大框。
+                const float dx = e.bb_max.x - e.bb_min.x;
+                const float dy = e.bb_max.y - e.bb_min.y;
+                const float dz = e.bb_max.z - e.bb_min.z;
+                e.has_bb = (dx > 0.01f && dy > 0.01f && dz > 0.01f &&
+                            dx < 64.0f && dy < 64.0f && dz < 64.0f);
             }
         }
         out[got++] = e;

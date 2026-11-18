@@ -32,6 +32,7 @@
 #include "input.h"
 #include "log.h"
 #include "render.h"
+#include "rpc.h"
 
 namespace xiaoyu {
 namespace {
@@ -45,6 +46,10 @@ int g_cached_x = 0, g_cached_y = 0, g_cached_w = 0, g_cached_h = 0;
 bool g_visible = false;
 bool g_interactive = false;
 bool g_running = false;
+// 覆盖层线程生命周期：0=没启动 1=跑着 2=已经彻底退出
+// 卸载要走硬卸载（FreeLibrary）时必须等它到 2 —— 线程还在跑的时候
+// 把 DLL 卸了，它下一句指令就跳到已释放的内存上。
+volatile LONG g_life = 0;
 ULONGLONG g_unlock_check_at = 0;  // 合成解锁键之后多久去确认一次效果
 int g_unlock_vk = 0;              // 这次合成的是哪个键
 int g_unlock_stage = 0;           // 0=空闲 1=已 SendInput 2=已投递窗口消息
@@ -545,10 +550,11 @@ bool CreateOverlayWindow() {
 
 void RenderOnce() {
     if (!render::BeginFrame()) return;
-    // ESP 先画：它属于"游戏世界里的东西"，面板永远盖在上面。
-    // 这一层不需要相机矩阵，也不需要碰游戏的渲染管线 —— 自己从
-    // LocalPlayer 的位置和 ECS rotation 组件算出投影就行。
+    // 画三层，顺序就是覆盖关系：ESP（世界里的东西）→ 脚本列表 → 面板。
+    // 脚本那一层是给外部调试用的：管道客户端每帧提交一批框/线/字，
+    // 于是改投影参数只要重跑脚本，不用重编译 DLL。
     esp::Render();
+    rpc::RenderDrawList();
     gui::OnFrame();
     render::EndFrame();
 }
@@ -599,6 +605,7 @@ int OverlayMain() {
     LogLine("[overlay] 就绪 %dx%d @ (%d,%d)，按右 Shift 开关面板", w, h, tl.x, tl.y);
 
     g_running = true;
+    InterlockedExchange(&g_life, 1);
     ULONGLONG next_frame = GetTickCount64();
     ULONGLONG last_report = GetTickCount64();
 
@@ -736,6 +743,7 @@ int OverlayMain() {
     render::Shutdown();
     if (g_overlay != nullptr) DestroyWindow(g_overlay);
     g_overlay = nullptr;
+    InterlockedExchange(&g_life, 2);
     LogLine("[overlay] 线程退出");
     return 0;
 }
@@ -766,6 +774,25 @@ void StartOverlay() {
     } else {
         LogLine("[overlay] CreateThread failed err=%lu", (unsigned long)GetLastError());
     }
+}
+
+// 停覆盖层，并且**等它真的退干净**再返回。
+// 退出路径上要还原光标显示计数、摘钩子、销毁窗口 —— 这些没做完就
+// FreeLibrary，游戏里会永久多一个光标额度，钩子也会指向已释放的代码段。
+// 最多等 5 秒：正常几百毫秒，卡住了也不能把卸载流程吊死。
+void StopOverlay() {
+    const LONG st = InterlockedCompareExchange(&g_life, 0, 0);
+    if (st == 0) {
+        InterlockedExchange(&g_life, 2);   // 从来没启动过（safe.txt 模式）
+        return;
+    }
+    if (st == 2) return;
+    g_running = false;
+    for (int i = 0; i < 500; ++i) {
+        if (InterlockedCompareExchange(&g_life, 0, 0) == 2) return;
+        Sleep(10);
+    }
+    LogLine("[overlay] StopOverlay 等待超时（5 秒），继续往下走");
 }
 
 }  // namespace xiaoyu
