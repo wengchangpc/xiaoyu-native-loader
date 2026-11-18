@@ -25,6 +25,9 @@ volatile LONG g_stop = 0;
 // 正在跑子进程。硬卸载前必须确认它是 0：否则子进程结束时会把控制权
 // 交回一段已经被 FreeLibrary 释放掉的代码，直接崩进程。
 volatile LONG g_busy = 0;
+// 轮询线程的句柄。留着是为了 Stop() 能 join —— 线程还在 Sleep 里就把
+// DLL 卸了，它醒过来会跳到已释放的代码段。
+HANDLE g_thread = nullptr;
 
 void POpen() {
     if (g_pf != nullptr) return;
@@ -132,10 +135,6 @@ void Stop() {
         CloseHandle(g_thread);
         g_thread = nullptr;
     }
-}
-
-void Stop() {
-    InterlockedExchange(&g_stop, 1);
 }
 
 bool Busy() { return InterlockedCompareExchange(&g_busy, 0, 0) != 0; }
