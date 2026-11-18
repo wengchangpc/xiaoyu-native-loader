@@ -52,7 +52,10 @@ namespace {
 const float kPi = 3.14159265358979f;
 const float kDeg2Rad = kPi / 180.0f;
 
-const wchar_t* kIniPath = L"C:\\Xiaoyu\\native_config.txt";
+// ★ 单独的 ini，不塞进 native_config.txt：
+//   那个文件由 cfg::Save() 全量重写，任何一次 GUI 改动都会把自定义的 [esp] 段
+//   整段丢掉，fov 会悄无声息退回默认值。独立文件不参与那套存档。
+const wchar_t* kIniPath = L"C:\\Xiaoyu\\esp.ini";
 
 int g_last_drawn = 0;
 int g_last_actors = 0;
