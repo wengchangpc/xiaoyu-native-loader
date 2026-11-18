@@ -305,6 +305,14 @@ constexpr uintptr_t kOffMcLevelWrapper = 0x00B8;
 // ── wrapper 字段 ────────────────────────────────────────────────
 constexpr uintptr_t kOffWrapperLevel = 0x0040;
 
+// ── Minecraft 字段 ──────────────────────────────────────────────
+constexpr uintptr_t kOffMcClientInstanceA = 0x0018;   // 与下面同一个对象
+constexpr uintptr_t kOffMcClientInstanceB = 0x0168;
+
+// ── ClientInstance 字段 ─────────────────────────────────────────
+constexpr uintptr_t kOffCiLevelRenderer = 0x0138;
+constexpr uintptr_t kOffCiOptions = 0x0CC0;
+
 struct Vec3 {
     float x;
     float y;
@@ -354,6 +362,29 @@ inline uintptr_t ActorManagerOf(uintptr_t lp) {
     return mem::ReadPtr(lv + kOffActorManager);
 }
 
+// Level -> Minecraft -> ClientInstance
+inline uintptr_t MinecraftOf(uintptr_t lp) {
+    const uintptr_t lv = LevelOf(lp);
+    if (lv == 0) return 0;
+    return mem::ReadPtr(lv + kOffLevelMinecraft);
+}
+
+inline uintptr_t ClientInstanceOf(uintptr_t lp) {
+    const uintptr_t mc = MinecraftOf(lp);
+    if (mc == 0) return 0;
+    uintptr_t ci = mem::ReadPtr(mc + kOffMcClientInstanceA);
+    if (ci == 0) ci = mem::ReadPtr(mc + kOffMcClientInstanceB);
+    return ci;
+}
+
+// 游戏设置对象。FOV / 视角 / 灵敏度都在里面 —— 目前还没定位到具体字段，
+// 先用 esp.cpp 里配置的 fov，等 Options 的字段挖出来再切过来。
+inline uintptr_t OptionsOf(uintptr_t lp) {
+    const uintptr_t ci = ClientInstanceOf(lp);
+    if (ci == 0) return 0;
+    return mem::ReadPtr(ci + kOffCiOptions);
+}
+
 // 校验一个地址是不是指定 RVA 的 vtable（用于确认链路没走歪）
 inline bool VtableIs(uintptr_t obj, uintptr_t rva) {
     if (obj == 0) return false;
@@ -362,9 +393,49 @@ inline bool VtableIs(uintptr_t obj, uintptr_t rva) {
 }
 
 // ══════════════════════════════════════════════════════════════════
+// 高层对象链（2026-11-18 recon/dump_all.py 实测）
+// ══════════════════════════════════════════════════════════════════
+//   Level     +0x0748  Minecraft
+//   Minecraft +0x0018  ClientInstance      ← 和 +0x0168 指向同一对象
+//   Minecraft +0x0168  ClientInstance
+//   Minecraft +0x0198  MinecraftGame
+//
+//   ClientInstance 内部（扫前 0x1400 字节）：
+//     +0x00F8  MinecraftEventing
+//     +0x0100  MinecraftGame
+//     +0x0118  RayTracingOptions
+//     +0x0128  Minecraft
+//     +0x0138  LevelRenderer            ★ 世界矩阵 / 相机大概率在这层
+//     +0x0168  MinecraftKeyboardManager
+//     +0x0170  HitDetectSystem
+//     +0x0CC0  Options                  ★ FOV / 视角 / 各设置项
+//     +0x0CC8  _Ref_count_resource<$Options>
+//
+//   用途：ESP 现在是自算投影（玩家眼睛 + rotation 组件 + 配置里的 FOV）。
+//   拿到 Options 之后 FOV 可以改成读游戏设置，投影就和真实画面完全一致；
+//   LevelRenderer 里若能挖出 view-projection 矩阵，连相机都省了。
+//
+// ── ECS 组件清单（两次 dump 的并集，只列对模块有用的）────────────
+//   UStateVectorComponent         pos / posPrev / velocity       步长 0x30
+//   UActorRotationComponent       pitch / yaw                    步长 0x10
+//   UAABBShapeComponent           碰撞箱（Reach / ESP 精确框）
+//   UActorUniqueIDComponent       实体唯一 id（追踪、去重）
+//   UOnGroundFlagComponent        是否着地（Fly / NoFall）
+//   UGroundTravelFlagComponent    地面移动标志
+//   UAirSpeedComponent            空中速度（Fly / Speed）
+//   UFallDistanceComponent        下落距离（NoFall）
+//   UHorizontalCollisionComponent 水平碰撞（Scaffold / 卡墙判断）
+//   UActiveCameraComponent        当前激活相机实体（第三人称也对得上）
+//   UPassengerComponent / UVehicleComponent   骑乘关系
+//
+//   ★ 没有 HealthComponent，也没有 InventoryComponent：血量、饥饿、背包
+//     不在 ECS 里，得从 Actor / Player 的字段读。dump_all.py 第 8 节在
+//     LocalPlayer 前 0x1000 字节里既没找到 float 20.0 也没找到 int 20，
+//     下一步要往 0x1000 之后继续找。
+//
+// ══════════════════════════════════════════════════════════════════
 // ECS 实体表（全部实测于 2026-11-18，33 个实体：1 本机 + 18 远程 + 14 掉落物）
 // ══════════════════════════════════════════════════════════════════
-
 // registry A（ActorOwnerComponent）在 ActorManager 上的偏移
 constexpr uintptr_t kOffActorOwnerRegistry = 0x0270;
 constexpr uintptr_t kOffActorOwnerStorage = 0x0558;

@@ -36,6 +36,7 @@
 #include <cstdarg>
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "config.h"
@@ -80,12 +81,34 @@ bool ParamOn(int fi, const wchar_t* attr) {
     return ParamOf(fi, attr, 0.0f) > 0.5f;
 }
 
-// 垂直 FOV。ini 里配一次就缓存，改了要重开面板才生效（够用）。
+// 垂直 FOV。以前只读一次，改 ini 得重开一个实例才生效；投影要拿它跟真实
+// 画面对齐，反复重注入太慢，所以改成每 2 秒重读一次，改完 native_config.txt
+// 两秒内就能在屏幕上看到效果。
 int FovDeg() {
-    static int v = -1;
-    if (v < 0) {
-        v = (int)GetPrivateProfileIntW(L"esp", L"fov", 70, kIniPath);
-        if (v < 20 || v > 140) v = 70;
+    static int v = 70;
+    static ULONGLONG last = 0;
+    const ULONGLONG now = GetTickCount64();
+    if (last == 0 || now - last > 2000) {
+        last = now;
+        int n = (int)GetPrivateProfileIntW(L"esp", L"fov", 70, kIniPath);
+        if (n < 20 || n > 140) n = 70;
+        v = n;
+    }
+    return v;
+}
+
+// 眼睛高度同理会随潜行变化（1.62 -> 1.27）。拿不到潜行标志之前先做成可配，
+// 以后拿到 UOnGroundFlagComponent 之类的再自动切。
+float EyeHeight() {
+    static float v = 1.62f;
+    static ULONGLONG last = 0;
+    const ULONGLONG now = GetTickCount64();
+    if (last == 0 || now - last > 2000) {
+        last = now;
+        wchar_t buf[32] = {0};
+        GetPrivateProfileStringW(L"esp", L"eye", L"1.62", buf, 32, kIniPath);
+        const float f = (float)_wtof(buf);
+        if (f > 0.5f && f < 3.0f) v = f;
     }
     return v;
 }
@@ -105,7 +128,7 @@ void MakeCamera(const sdk::ActorEntry& me, int w, int h, Camera* c) {
     const float cp = cosf(pitch), sp = sinf(pitch);
 
     c->eye = me.pos;
-    c->eye.y += sdk::kEyeHeight;
+    c->eye.y += EyeHeight();
 
     c->fx = -sy * cp;
     c->fy = -sp;
@@ -221,6 +244,22 @@ void Render() {
         Why("目录里找不到 ESP 这一项");
         return;
     }
+    // 一次性诊断：把索引和开关值打出来。ESP 不出框时这一行能立刻分清
+    // 是"配置没读进来"还是"渲染链路断了"，省掉一轮重新编译。
+    static bool s_diag = false;
+    if (!s_diag) {
+        s_diag = true;
+        char nm[40] = {0};
+        for (int k = 0; k < 39 && kFeatures[fi].en != nullptr &&
+                        kFeatures[fi].en[k] != L'\0'; ++k) {
+            nm[k] = (char)kFeatures[fi].en[k];
+        }
+        const int ac = FindFeature(L"AC");
+        LogLine("[esp] diag fi=%d en=%s on=%d | AC=%d on=%d | kFeatureCount=%d",
+                fi, nm, cfg::ModuleOn(fi) ? 1 : 0, ac,
+                (ac >= 0 && cfg::ModuleOn(ac)) ? 1 : 0, kFeatureCount);
+    }
+
     if (!cfg::ModuleOn(fi)) {
         g_last_drawn = 0;
         Why("模块开关是关的（配置里写 m.ESP=1 再注入一个新实例）");
