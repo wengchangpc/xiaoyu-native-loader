@@ -137,7 +137,8 @@ void CmdInfo(HANDLE h) {
     char buf[1024];
     int n = sprintf_s(buf,
         "pid=%lu\nbase=0x%llX\nsize=0x%llX\nlp=0x%llX\nlevel=0x%llX\n"
-        "actorsmgr=0x%llX\nclientinstance=0x%llX\noptions=0x%llX\n",
+        "actorsmgr=0x%llX\nclientinstance=0x%llX\noptions=0x%llX\n"
+        "w=%d\nh=%d\n",
         (unsigned long)GetCurrentProcessId(),
         (unsigned long long)mem::Base(),
         (unsigned long long)mem::ImageSize(),
@@ -145,7 +146,8 @@ void CmdInfo(HANDLE h) {
         (unsigned long long)(lp ? sdk::LevelOf(lp) : 0),
         (unsigned long long)(lp ? sdk::ActorManagerOf(lp) : 0),
         (unsigned long long)(lp ? sdk::ClientInstanceOf(lp) : 0),
-        (unsigned long long)(lp ? sdk::OptionsOf(lp) : 0));
+        (unsigned long long)(lp ? sdk::OptionsOf(lp) : 0),
+        render::Width(), render::Height());
     SendOk(h, buf, n);
 }
 
