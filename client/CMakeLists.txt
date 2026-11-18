@@ -23,6 +23,7 @@ set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 add_library(xiaoyu_client SHARED
     src/bridge.cpp
     src/dllmain.cpp
+    src/esp.cpp
     src/explorer.cpp
     src/input.cpp
     src/log.cpp

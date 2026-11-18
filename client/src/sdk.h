@@ -180,6 +180,68 @@
 //
 //   ActorManager
 //     +0x0020 ClientActorManagerProxy     （实体表可能在这层，未验）
+//     +0x0048 / +0x0050  registry B       ★ 有 rotation / statevector
+//     +0x01C8 / +0x01D0  registry
+//     +0x0270 / +0x0278  registry A       ★ 有 ActorOwnerComponent
+//
+// ────────────────────────────────────────────────────────────────
+// ★★ 实体列表：Bedrock 用的是 EnTT 风格 ECS，不是 vector<Actor*>
+// ────────────────────────────────────────────────────────────────
+//   这条推翻了之前所有「在 Level / Dimension / ActorManager 里找
+//   vector<Actor*>」的思路。实测（recon/ecs.py + players.py + rot.py）：
+//
+//     Level +0x0838 -> ActorManager
+//     ActorManager+0x0270 -> registry A
+//     registry A +0x0558  -> basic_storage<VActorOwnerComponent, EntityId>
+//     storage +0x0020     -> packed EntityId 数组（4 字节一个）★长度在这
+//     storage +0x0050     -> 「instance 分段」vector，只 1 个元素
+//       *(storage+0x0050) -> 裸 Actor* 数组
+//
+//   ★ 数组后面紧跟字符串常量（在 [33] 读到 ASCII "position"），
+//     所以**不能**靠「读到非法指针就停」来取长度。
+//     真实长度 = (*(storage+0x28) - *(storage+0x20)) / 4，实测 33。
+//
+//   ★ ActorManager 下有 6 个 registry，只有 +0x0270 那个身上挂着
+//     ActorOwnerComponent；+0x01C8 的 +0x478 处是空的（0xFFFFFFFF），
+//     早期按 ecs.log 里另一个 registry 的偏移去读才读得到，别搞混。
+//
+// ────────────────────────────────────────────────────────────────
+// ★★★ 旋转（yaw / pitch）：另一个 registry，用 EntityId 索引对齐
+// ────────────────────────────────────────────────────────────────
+//   registry A 里只有 mob 标记 + 摄像机组件，**没有 rotation**。
+//   rotation 在 registry B（ActorManager+0x0048）：
+//     registry B +0x0528 -> basic_storage<UActorRotationComponent>
+//     registry B +0x0548 -> basic_storage<UStateVectorComponent>
+//
+//   实测三个 storage（ActorOwner / Rotation / StateVector）的 packed
+//   EntityId 列表**完全一致、顺序也一致**（33 个），所以下标可以直接
+//   互通：actors[i] 的 rotation 就是 rot_seg[i * 0x10]。
+//
+//   元素布局（实测反推）：
+//     UActorRotationComponent  步长 0x10
+//       +0x00 float  pitch（度，低头为正）
+//       +0x04 float  yaw  （度，0=+Z，90=-X）
+//       +0x08 Vec2   mRotPrev（同一对值）
+//     UStateVectorComponent    步长 0x30
+//       +0x00 Vec3 mPos
+//       +0x0C Vec3 mPosPrev
+//       +0x18 Vec3 mVelocity
+//   怎么确认步长的：拿 7 个 Actor 已知的 +0xCE0 坐标在 statevector 段里
+//   定位，命中位置是 0x00 / 0x30 / 0x60 / 0x90 / 0xC0 / 0xF0 / 0x120，
+//   等差 0x30；而且第 k 组正好是 Actor#k，跨 storage 下标对齐成立。
+//   rotation 段的原始 float 是 (pitch, yaw) 成对重复两次，例如
+//   玩家 6.570 / 91.916，同场景 18 个 RemotePlayer 的 yaw 集中在
+//   81~92 度、pitch 都是 0 左右 —— 符合「站成一排看着同一方向」。
+//
+// ────────────────────────────────────────────────────────────────
+// ★ ItemActor 是未激活池，别当实体用
+// ────────────────────────────────────────────────────────────────
+//   实体表里有 14 个 ItemActor，但它们的 +0xCE0 全是 (0,0,0)，
+//   而且在对象头 0x2000 字节里找不到任何「附近坐标」的三连浮点
+//   （recon/entity2.py 全扫过）。更能说明问题的是 BlockSource：
+//   18 个 RemotePlayer 的 +0xDE8 全指向有效的 BlockSource，
+//   14 个 ItemActor 里 13 个是 0、剩下 1 个是 0x801 这种垃圾值。
+//   结论：它们还没被放进世界，ESP 只画 Player 子类。
 //
 // ────────────────────────────────────────────────────────────────
 // ★ 已排除的路径（避免重复劳动）
@@ -289,6 +351,173 @@ inline bool VtableIs(uintptr_t obj, uintptr_t rva) {
     if (obj == 0) return false;
     const uintptr_t vt = mem::ReadPtr(obj);
     return vt == mem::Base() + rva;
+}
+
+// ══════════════════════════════════════════════════════════════════
+// ECS 实体表（全部实测于 2026-11-18，33 个实体：1 本机 + 18 远程 + 14 掉落物）
+// ══════════════════════════════════════════════════════════════════
+
+// registry A（ActorOwnerComponent）在 ActorManager 上的偏移
+constexpr uintptr_t kOffActorOwnerRegistry = 0x0270;
+constexpr uintptr_t kOffActorOwnerStorage = 0x0558;
+
+// registry B（rotation / statevector）在 ActorManager 上的偏移
+constexpr uintptr_t kOffRotRegistry = 0x0048;
+constexpr uintptr_t kOffRotStorage = 0x0528;
+constexpr uintptr_t kOffStateVecStorage = 0x0548;
+
+// basic_sparse_set / basic_storage 内部
+constexpr uintptr_t kOffStoragePackedBegin = 0x0020;   // 4 字节 EntityId 数组
+constexpr uintptr_t kOffStoragePackedEnd = 0x0028;     // 长度 =(end-begin)/4
+constexpr uintptr_t kOffStorageSegVec = 0x0050;        // 元素（裸数组）指针
+
+// 组件步长
+constexpr size_t kRotStride = 0x10;   // { Vec2 mRot; Vec2 mRotPrev; }
+constexpr size_t kStateVecStride = 0x30;  // { Vec3 pos; Vec3 prev; Vec3 vel; }
+
+// 玩家眼睛相对脚底的高度（站立 1.62，潜行 1.27）。ESP 的投影原点用它。
+constexpr float kEyeHeight = 1.62f;
+// 玩家碰撞箱（玩家固定 0.6 x 1.8）
+constexpr float kPlayerWidth = 0.6f;
+constexpr float kPlayerHeight = 1.8f;
+
+struct ActorEntry {
+    uintptr_t actor;
+    uint32_t entity_id;
+    Vec3 pos;      // 脚底位置（= +0xCE0）
+    float pitch;   // 度，低头为正
+    float yaw;     // 度，0=+Z，90=-X
+};
+
+// ── 类型名反查：vtable -> COL -> TypeDescriptor -> 名字 ──────────
+// 只在同一个 vtable 上做一次，之后走 64 项小缓存。
+// 返回的指针指向静态存储，调用方不要释放。
+inline const char* ClassNameOf(uintptr_t obj) {
+    struct Slot {
+        uintptr_t vt;
+        char name[80];
+    };
+    static Slot s_cache[64];
+    static int s_used = 0;
+
+    const uintptr_t vt = mem::ReadPtr(obj);
+    if (vt == 0) return nullptr;
+    for (int i = 0; i < s_used; ++i) {
+        if (s_cache[i].vt == vt) return s_cache[i].name;
+    }
+    if (s_used >= 64) s_used = 0;  // 满了就从 0 覆盖，几十个类足够用
+
+    const uintptr_t base = mem::Base();
+    if (!mem::InImage(vt)) return nullptr;
+    const uintptr_t col = mem::ReadPtr(vt - 8);
+    if (col == 0 || !mem::InImage(col)) return nullptr;
+    uint32_t td_rva = 0;
+    if (!mem::Read(col + 12, &td_rva) || td_rva == 0) return nullptr;
+
+    char raw[160] = {0};
+    if (!mem::Read(base + td_rva + 16, raw, sizeof(raw) - 1)) return nullptr;
+
+    // 去掉 MSVC 修饰前缀 ".?AV" 和结尾的 "@@"
+    const char* p = raw;
+    if (p[0] == '.' && p[1] == '?' && p[2] == 'A') p += 3;
+    if (p[0] == 'V' || p[0] == 'U') ++p;
+
+    Slot& s = s_cache[s_used++];
+    s.vt = vt;
+    int n = 0;
+    for (; p[n] != '\0' && p[n] != '@' && n < (int)sizeof(s.name) - 1; ++n) {
+        s.name[n] = p[n];
+    }
+    s.name[n] = '\0';
+    return s.name;
+}
+
+// 类名里带 Player 的都算玩家（LocalPlayer / RemotePlayer / 可能还有
+// ServerPlayer / Player 派生类）。ItemActor、Mob 之类一律不算。
+inline bool IsPlayerClass(const char* name) {
+    if (name == nullptr) return false;
+    for (const char* p = name; *p != '\0'; ++p) {
+        if (p[0] == 'P' && p[1] == 'l' && p[2] == 'a' && p[3] == 'y' &&
+            p[4] == 'e' && p[5] == 'r') {
+            return true;
+        }
+    }
+    return false;
+}
+
+// 枚举当前维度里的全部实体。返回实际写入 out 的条数。
+// lp 传 0 时内部自己取。max 建议 >= 512。
+inline int EnumActors(ActorEntry* out, int max, uintptr_t lp = 0) {
+    if (out == nullptr || max <= 0) return 0;
+    if (lp == 0) lp = LocalPlayer();
+    if (lp == 0) return 0;
+
+    const uintptr_t am = ActorManagerOf(lp);
+    if (am == 0) return 0;
+    const uintptr_t reg_a = mem::ReadPtr(am + kOffActorOwnerRegistry);
+    if (reg_a == 0) return 0;
+    const uintptr_t sto = mem::ReadPtr(reg_a + kOffActorOwnerStorage);
+    if (sto == 0) return 0;
+
+    const uintptr_t pb = mem::ReadPtr(sto + kOffStoragePackedBegin);
+    const uintptr_t pe = mem::ReadPtr(sto + kOffStoragePackedEnd);
+    if (pb == 0 || pe <= pb) return 0;
+    int n = (int)((pe - pb) / 4);
+    // 先做合理性检查再截断：正常世界几十到几千个实体，读到上百万说明
+    // 链路歪了（比如 storage 被释放后在原地被别的对象复用）。
+    if (n <= 0 || n > 65536) return 0;
+    if (n > max) n = max;
+
+    const uintptr_t segvec = mem::ReadPtr(sto + kOffStorageSegVec);
+    if (segvec == 0) return 0;
+    const uintptr_t seg = mem::ReadPtr(segvec);
+    if (seg == 0) return 0;
+
+    // rotation 段：拿不到就只填位置，pitch/yaw 留 0
+    uintptr_t rot_seg = 0;
+    const uintptr_t reg_b = mem::ReadPtr(am + kOffRotRegistry);
+    if (reg_b != 0) {
+        const uintptr_t rsto = mem::ReadPtr(reg_b + kOffRotStorage);
+        if (rsto != 0) {
+            const uintptr_t rv = mem::ReadPtr(rsto + kOffStorageSegVec);
+            if (rv != 0) rot_seg = mem::ReadPtr(rv);
+        }
+    }
+
+    int got = 0;
+    for (int i = 0; i < n; ++i) {
+        const uintptr_t a = mem::ReadPtr(seg + (size_t)i * 8);
+        if (a == 0) continue;
+        ActorEntry e;
+        e.actor = a;
+        e.entity_id = 0;
+        e.pitch = 0.0f;
+        e.yaw = 0.0f;
+        (void)mem::Read(pb + (size_t)i * 4, &e.entity_id);
+        if (!mem::Read(a + kOffPos, &e.pos)) continue;
+        if (rot_seg != 0) {
+            float rp[2] = {0.0f, 0.0f};
+            if (mem::Read(rot_seg + (size_t)i * kRotStride, rp, sizeof(rp))) {
+                e.pitch = rp[0];
+                e.yaw = rp[1];
+            }
+        }
+        out[got++] = e;
+    }
+    return got;
+}
+
+// 只取玩家（含本机）。返回条数。
+inline int EnumPlayers(ActorEntry* out, int max, uintptr_t lp = 0) {
+    if (out == nullptr || max <= 0) return 0;
+    ActorEntry tmp[512];
+    int n = EnumActors(tmp, 512, lp);
+    int got = 0;
+    for (int i = 0; i < n && got < max; ++i) {
+        if (!IsPlayerClass(ClassNameOf(tmp[i].actor))) continue;
+        out[got++] = tmp[i];
+    }
+    return got;
 }
 
 }  // namespace sdk

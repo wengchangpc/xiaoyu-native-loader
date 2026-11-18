@@ -27,6 +27,7 @@
 #include <windowsx.h>
 
 #include "config.h"
+#include "esp.h"
 #include "gui.h"
 #include "input.h"
 #include "log.h"
@@ -544,6 +545,10 @@ bool CreateOverlayWindow() {
 
 void RenderOnce() {
     if (!render::BeginFrame()) return;
+    // ESP 先画：它属于"游戏世界里的东西"，面板永远盖在上面。
+    // 这一层不需要相机矩阵，也不需要碰游戏的渲染管线 —— 自己从
+    // LocalPlayer 的位置和 ECS rotation 组件算出投影就行。
+    esp::Render();
     gui::OnFrame();
     render::EndFrame();
 }

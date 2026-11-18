@@ -542,6 +542,14 @@ bool Implemented(const wchar_t* english_name) {
     for (size_t i = 0; i < sizeof(kSynth) / sizeof(kSynth[0]); ++i) {
         if (wcscmp(kSynth[i], english_name) == 0) return true;
     }
+    // 读游戏内存实现的（esp.cpp）。链路：
+    //   LocalPlayer 静态全局 -> BlockSource -> Level -> ActorManager
+    //   -> ECS registry -> ActorOwnerComponent / RotationComponent
+    // 目前只有 ESP 一个，后面的 KillAura / Scaffold / Xray 都走同一套数据源。
+    static const wchar_t* kMemory[] = {L"ESP"};
+    for (size_t i = 0; i < sizeof(kMemory) / sizeof(kMemory[0]); ++i) {
+        if (wcscmp(kMemory[i], english_name) == 0) return true;
+    }
     return false;
 }
 
