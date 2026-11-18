@@ -33,6 +33,7 @@
 
 #include <windows.h>
 
+#include <cstdarg>
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -193,6 +194,22 @@ void DrawBox(float x0, float y0, float x1, float y1, float t, const D2D1_COLOR_F
     render::Line(x0, y1, x0, y0, t, c);
 }
 
+// 提前返回时留一句话。上一次 ESP 一根框都不出、日志里一个字都没有，
+// 只能靠猜是"模块没开"还是"链路断了"。这里把每种早退原因都标出来，
+// 限流 2 秒一次，正常运行时不会刷屏（因为正常路径走不到这里）。
+void Why(const char* fmt, ...) {
+    static ULONGLONG last = 0;
+    const ULONGLONG now = GetTickCount64();
+    if (now - last < 2000) return;
+    last = now;
+    char buf[224];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    LogLine("[esp] 停在：%s", buf);
+}
+
 }  // namespace
 
 int LastDrawn() { return g_last_drawn; }
@@ -200,9 +217,13 @@ int LastActors() { return g_last_actors; }
 
 void Render() {
     const int fi = FindFeature(L"ESP");
-    if (fi < 0) return;
+    if (fi < 0) {
+        Why("目录里找不到 ESP 这一项");
+        return;
+    }
     if (!cfg::ModuleOn(fi)) {
         g_last_drawn = 0;
+        Why("模块开关是关的（配置里写 m.ESP=1 再注入一个新实例）");
         return;
     }
 
@@ -210,6 +231,8 @@ void Render() {
     if (lp == 0) {
         g_last_drawn = 0;
         g_last_actors = 0;
+        Why("LocalPlayer=0（base=0x%llX，没进世界或静态全局还没写）",
+            (unsigned long long)mem::Base());
         return;
     }
 
@@ -218,6 +241,7 @@ void Render() {
     g_last_actors = n;
     if (n == 0) {
         g_last_drawn = 0;
+        Why("实体表是空的（ActorManager 链路可能变了）");
         return;
     }
 
@@ -228,6 +252,7 @@ void Render() {
     }
     if (me == nullptr) {
         g_last_drawn = 0;
+        Why("枚举到 %d 个实体，但里面没有 LocalPlayer", n);
         return;
     }
 

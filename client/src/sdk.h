@@ -312,8 +312,16 @@ struct Vec3 {
 };
 
 // 拿当前 LocalPlayer。读不到（还在标题界面 / 全局还没写）返回 0。
+//
+// ★ 这里必须兜底调一次 mem::Init()。以前只有 probe / explorer 会调它，
+//   两个都关掉之后 mem::Base() 一直是 0，整个 SDK 静默失效 —— ESP 一进
+//   渲染函数就 return，连一行日志都不会留。mem::Init() 是幂等的。
 inline uintptr_t LocalPlayer() {
-    const uintptr_t base = mem::Base();
+    uintptr_t base = mem::Base();
+    if (base == 0) {
+        (void)mem::Init();
+        base = mem::Base();
+    }
     if (base == 0) return 0;
     return mem::ReadPtr(base + kLocalPlayerGlobalRva);
 }

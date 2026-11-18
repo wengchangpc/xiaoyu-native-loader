@@ -23,6 +23,7 @@
 #include "bridge.h"
 #include "explorer.h"
 #include "log.h"
+#include "memory.h"
 #include "probe.h"
 
 namespace xiaoyu {
@@ -58,6 +59,18 @@ DWORD WINAPI BootThread(LPVOID param) {
     }
 
     xiaoyu::LogLine("[boot] 4/4 启动覆盖层线程");
+
+    // 内存层必须先初始化：sdk.h 里所有访问器都依赖 mem::Base() 拿到主模块基址。
+    // 以前这件事是 probe / explorer 干的，两个关掉之后就没人做了 ——
+    // mem::Base() 恒为 0，ESP 静默不出框，日志里一个字都没有。
+    if (xiaoyu::mem::Init()) {
+        xiaoyu::LogLine("[boot] mem 就绪 base=0x%llX size=%.1fMB regions=%d",
+                        (unsigned long long)xiaoyu::mem::Base(),
+                        (double)xiaoyu::mem::ImageSize() / 1048576.0,
+                        (int)xiaoyu::mem::RegionCount());
+    } else {
+        xiaoyu::LogLine("[boot] !! mem::Init 失败，读内存的模块全部不可用");
+    }
 
     // 文件命令通道：监听 C:\Xiaoyu\run.bat，用游戏进程的权限执行它。
     //
