@@ -244,14 +244,18 @@ struct Range {
     size_t size;
 };
 
-const int kMaxRanges = 4096;
-Range g_ranges[kMaxRanges];
-int g_range_count = 0;
-
-// 遍历所有 MEM_COMMIT + MEM_PRIVATE + 可写 的区域，跳过当前线程的栈。
-// 跳过栈的理由和 memory.cpp 里一样：调用方在栈上放了临时数组，
-// 里面可能有"看起来像对象"的值。
-size_t CollectRanges() {
+// 遍历所有 MEM_COMMIT + MEM_PRIVATE + 可写 的区域，对每一块调用 fn，
+// 返回扫过的总字节数。
+//
+// ★ 不能用"先收集到数组再扫"的写法：区域数量会超过任何固定上限。
+//   上一版用 Range g_ranges[4096] 收集，实际区域数正好撞上 4096 ——
+//   列表被静默截断，只扫了 861MB 就停了，LocalPlayer 所在的那段堆根本
+//   没被扫到。于是 1024 个命中名额全被前半段的假阳性占满，
+//   最后一行的 LocalPlayer 是 0x0。改成回调式之后没有上限。
+//
+// 跳过当前线程的栈：调用方在栈上放了临时数组，里面可能有"看起来像对象"的值。
+template <class Fn>
+size_t ForEachWritableRegion(Fn fn) {
     // TEB 自指针在 GS:0x30，TIB 的 StackBase 在 +0x08、StackLimit 在 +0x10
     const uintptr_t teb = (uintptr_t)__readgsqword(0x30);
     uintptr_t stack_base = 0;
@@ -261,9 +265,7 @@ size_t CollectRanges() {
         (void)CopySafe(teb + 0x10, &stack_limit, sizeof(stack_limit));
     }
 
-    g_range_count = 0;
     size_t total = 0;
-
     uintptr_t cur = 0x10000;
     const uintptr_t limit = (uintptr_t)1 << 47;
 
@@ -271,12 +273,12 @@ size_t CollectRanges() {
         MEMORY_BASIC_INFORMATION mbi;
         if (VirtualQuery((LPCVOID)cur, &mbi, sizeof(mbi)) == 0) break;
 
-        const uintptr_t base = (uintptr_t)mbi.BaseAddress;
+        const uintptr_t rbase = (uintptr_t)mbi.BaseAddress;
         const size_t size = mbi.RegionSize;
         if (size == 0) break;
 
-        const uintptr_t rend = base + size;
-        const bool own_stack = (rend > stack_limit) && (base < stack_base);
+        const uintptr_t rend = rbase + size;
+        const bool own_stack = (rend > stack_limit) && (rbase < stack_base);
 
         const uint32_t pr = mbi.Protect;
         const bool writable =
@@ -284,12 +286,8 @@ size_t CollectRanges() {
              pr == PAGE_EXECUTE_READWRITE || pr == PAGE_EXECUTE_WRITECOPY);
 
         if (!own_stack && mbi.State == MEM_COMMIT && mbi.Type == MEM_PRIVATE && writable) {
-            if (g_range_count < kMaxRanges) {
-                g_ranges[g_range_count].base = base;
-                g_ranges[g_range_count].size = size;
-                ++g_range_count;
-            }
             total += size;
+            fn(rbase, size);
         }
 
         if (rend <= cur) break;
@@ -426,43 +424,36 @@ void Run() {
     // vtable 区范围。实测所有已确认的 vtable RVA 落在 0x8A00000 ~ 0x9200000：
     //   ClientInstance 0x8B9B6F0 / LocalPlayer 0x8C98B08 / Actor 0x8F3AA30
     //   Level 0x8FE38C0 / Dimension 0x908EE48 / Container 0x8ACE800
-    // 先按实测区间扫，命中 0 再放宽到 0x8000000 ~ ImageSize 重试一次。
-    uintptr_t vt_lo = base + 0x08800000ULL;
-    uintptr_t vt_hi = base + 0x09800000ULL;
+    //
+    // ★ 不再做"0 命中就放宽范围重试"。上一版就是这么崩的：第一遍扫 861MB
+    //   没命中，紧接着放宽范围再扫一遍，第二遍扫到一半整个游戏消失。
+    //   连续两次全堆遍历会被反作弊盯上 —— 一次都没命中的时候宁可老实报 0，
+    //   也不要偷偷再扫一遍把进程搭进去。范围本身留足余量（0x8600000 ~
+    //   0x9600000，16MB），一次覆盖全部实测 vtable。
+    uintptr_t vt_lo = base + 0x08600000ULL;
+    uintptr_t vt_hi = base + 0x09600000ULL;
     if (vt_hi > base + image) vt_hi = base + image;
     P("vtable 区   = 0x%llX ~ 0x%llX", (unsigned long long)vt_lo, (unsigned long long)vt_hi);
-
-    const size_t total = CollectRanges();
-    P("可写私有区  = %d 块, %.1f MB", g_range_count, (double)total / 1048576.0);
 
     LARGE_INTEGER t1;
     QueryPerformanceCounter(&t1);
 
-    // ── 第一遍 ──
-    for (int pass = 0; pass < 2; ++pass) {
-        g_actor_count = 0;
-        g_overflow = false;
-        // 每 128MB 打一行进度。第一版扫了 18 秒之后整个游戏消失，而日志里
-        // 完全看不出是"扫完了没找到"还是"扫到一半被反作弊杀了"——
-        // 有进度才能对着最后一行定位。
-        size_t done_bytes = 0;
-        size_t next_mark = 128u * 1024u * 1024u;
-        for (int i = 0; i < g_range_count; ++i) {
-            PassActors(g_ranges[i].base, g_ranges[i].size, vt_lo, vt_hi);
-            done_bytes += g_ranges[i].size;
-            if (done_bytes >= next_mark) {
-                P("  ...已扫 %.0f / %.0f MB, 命中 %d",
-                  (double)done_bytes / 1048576.0, (double)total / 1048576.0, g_actor_count);
-                next_mark += 128u * 1024u * 1024u;
-            }
+    // ── 第一遍：找 Actor（边遍历边扫，不预先收集区域列表）──
+    // 每 128MB 打一行进度：扫堆过程中进程随时可能被反作弊杀掉，
+    // 没有进度日志就只能对着"什么都没写"猜崩在哪一步。
+    g_actor_count = 0;
+    g_overflow = false;
+    size_t done_bytes = 0;
+    size_t next_mark = 128ull << 20;
+    const size_t total = ForEachWritableRegion([&](uintptr_t rbase, size_t rsize) {
+        PassActors(rbase, rsize, vt_lo, vt_hi);
+        done_bytes += rsize;
+        if (done_bytes >= next_mark) {
+            P("  ...已扫 %.0f MB, 命中 %d", (double)done_bytes / 1048576.0, g_actor_count);
+            next_mark += (128ull << 20);
         }
-        if (g_actor_count > 0) break;
-        if (pass == 0) {
-            P("窄范围 0 命中，放宽 vtable 区重试");
-            vt_lo = base + 0x08000000ULL;
-            vt_hi = base + image;
-        }
-    }
+    });
+    P("可写私有区  = %.1f MB（边遍历边扫，无区域数量上限）", (double)total / 1048576.0);
 
     P("");
     P("第一遍：%d 个 Actor%s  (%.0f ms)",
@@ -472,11 +463,19 @@ void Run() {
     P("");
     P("=== ACTOR LIST ===");
     const int kPrintMax = 200;   // 上千行日志既刷屏又拖慢写盘，只打前 200
+    // ★ LocalPlayer 必须在**全量**里找。上一版把它放在只打前 200 行的循环里，
+    //   于是命中一旦超过 200 就再也检测不到它。
     uintptr_t local_player = 0;
+    for (int i = 0; i < g_actor_count; ++i) {
+        const char* nm = ClassOf(g_actors[i].vtable);
+        if (nm != nullptr && strcmp(nm, "LocalPlayer") == 0) {
+            local_player = g_actors[i].addr;
+            break;
+        }
+    }
     for (int i = 0; i < g_actor_count && i < kPrintMax; ++i) {
         const ActorHit& h = g_actors[i];
         const char* nm = ClassOf(h.vtable);
-        if (nm != nullptr && strcmp(nm, "LocalPlayer") == 0) local_player = h.addr;
         P("addr=0x%llX vt=0x%llX class=%s pos=%.3f,%.3f,%.3f prev=%.3f,%.3f,%.3f bs=0x%llX",
           (unsigned long long)h.addr, (unsigned long long)h.vtable,
           nm != nullptr ? nm : "?",
@@ -517,14 +516,22 @@ void Run() {
     LARGE_INTEGER t2;
     QueryPerformanceCounter(&t2);
 
-    // ── 第二遍：容器反查 ──
-    if (g_actor_count > 0) {
+    // ── 第二遍：容器反查（默认关闭）──
+    // 第一遍约 20 秒，第二遍再 10 秒。上一版累计扫到 40 秒左右游戏就消失了，
+    // 所以这里默认只交第一遍的结果 —— 有 Actor 列表就已经能做 ESP/KillAura，
+    // 容器是优化项，不值得为它冒第二次全堆遍历的风险。
+    // 要反查容器时，往 C:\Xiaoyu\deep.txt 放个空文件再重新注入即可。
+    const bool deep = GetFileAttributesW(L"C:\\Xiaoyu\\deep.txt") != INVALID_FILE_ATTRIBUTES;
+    P("");
+    P("第二遍（容器反查）: %s", deep ? "开启" : "跳过（未发现 C:\\Xiaoyu\\deep.txt）");
+
+    if (g_actor_count > 0 && deep) {
         HashBuild();
         g_ref_count = 0;
         g_ref_overflow = false;
-        for (int i = 0; i < g_range_count; ++i) {
-            PassRefs(g_ranges[i].base, g_ranges[i].size);
-        }
+        ForEachWritableRegion([](uintptr_t rbase, size_t rsize) {
+            PassRefs(rbase, rsize);
+        });
         SortRefs();
 
         P("");

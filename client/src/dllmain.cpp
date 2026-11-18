@@ -66,18 +66,19 @@ DWORD WINAPI BootThread(LPVOID param) {
     // 文件不需要任何权限，也就不再需要人守着点 UAC。
     xiaoyu::bridge::Start();
 
-    // 进程内自诊断（已完成的阶段）：
-    //   probe.cpp   走 RTTI 链定位 ClientInstance / LocalPlayer，结果写 probe.log
-    //   explorer.cpp 全堆扫实体 + 反查容器，结果写 explorer.log
+    // 进程内自诊断（历史阶段，现在默认不跑）：
+    //   probe.cpp    走 RTTI 链定位 ClientInstance / LocalPlayer，写 probe.log
+    //   explorer.cpp 全堆扫实体 + 反查容器，写 explorer.log
     //
-    // 现在只跑 explorer —— probe 那套信息（RTTI 全表、ClientInstance/LocalPlayer
-    // 地址、Level/Dimension 链路）已经拿到并固化进 sdk.h 了，再跑一遍只是多花
-    // 30 秒扫一遍堆。要回去看 RTTI 细节时把下面这行放开即可。
+    // ★ 两个都关掉了。理由是 bridge 通道打通之后，DLL 只需要做一件事：
+    //   以游戏权限执行外部脚本。探索逻辑放在 Python 里改一版只要几秒，
+    //   放在 C++ 里改一版要 push + 等 CI + 重新注入（还弹 UAC），
+    //   效率差一个数量级。
+    //   更要紧的是 explorer 的全堆扫描会把游戏扫崩 —— 累计 40 秒左右的
+    //   遍历就会被反作弊收掉，而它一崩 bridge 也跟着没了。
+    //   需要时把下面任何一行放开即可。
     // xiaoyu::probe::Start(3000);
-
-    // ★ 必须放在 StartOverlay() 之前：那个函数会进窗口消息循环、不返回。
-    // ★ 延迟 3 秒是为了等进入世界 —— 注入到标题界面时 Actor 还没建。
-    xiaoyu::explorer::Start(3000);
+    // xiaoyu::explorer::Start(3000);
 
     xiaoyu::StartOverlay();
     return 0;
