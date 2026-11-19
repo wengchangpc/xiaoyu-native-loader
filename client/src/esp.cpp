@@ -295,6 +295,20 @@ void SetEyeOverride(float h) { g_eye_override = h; }
 float EyeOverride() { return g_eye_override; }
 
 void Render() {
+    // 构建匹配自检：**跟 ESP 开关无关**，只要拿到 LocalPlayer 就跑一次。
+    // 换 build 之后第一件事就是看 native.log 里这几行 —— 任何 MISMATCH
+    // 都说明这份 DLL 不是这个客户端的，后面所有偏移都不可信。
+    {
+        static bool s_chain_done = false;
+        if (!s_chain_done) {
+            const uintptr_t lp0 = sdk::LocalPlayer();
+            if (lp0 != 0) {
+                s_chain_done = true;
+                sdk::ChainReport("boot");
+            }
+        }
+    }
+
     const int fi = FindFeature(L"ESP");
     if (fi < 0) {
         Why("目录里找不到 ESP 这一项");
@@ -335,16 +349,6 @@ void Render() {
         Why("LocalPlayer=0（base=0x%llX，没进世界或静态全局还没写）",
             (unsigned long long)mem::Base());
         return;
-    }
-
-    // 一次性的「这份 DLL 和这个客户端是不是同一个 build」自检。
-    // 只在第一次拿到 LocalPlayer 时跑一遍，把整条链路的 vtable 逐个比对
-    // 写进日志。换 build 之后第一件事就是看这一段：任何一行 MISMATCH
-    // 都说明后面所有偏移都不可信，不用再去猜 ESP 为什么不画。
-    static bool s_chain_done = false;
-    if (!s_chain_done) {
-        s_chain_done = true;
-        sdk::ChainReport("ESP");
     }
 
     static sdk::ActorEntry actors[512];
