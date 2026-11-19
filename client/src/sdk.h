@@ -104,13 +104,26 @@
 // ────────────────────────────────────────────────────────────────
 // vtable 表（RVA，用于运行时校验）
 // ────────────────────────────────────────────────────────────────
-//   ClientInstance   RVA 0x8B9B6F0
-//   LocalPlayer      RVA 0x8C98B08
-//   Actor            RVA 0x8F3AA30
-//   Level            RVA 0x8FE38C0
-//   Dimension        RVA 0x908EE48
-//   BlockSource      RVA 0x8F3EFE8
-//   Container        RVA 0x8ACE800
+//   ★ 2026-11-20 从本 build（3.10.5 / build 301511）的 IDA 符号库
+//     （3dot10dot5_301511_unpacked_Minecraft.Windows.exe.i64）逐个读出来的
+//     真值，不是猜的，也不是上一版留下的：
+//
+//       ??_7ClientInstance@@6B@    RVA 0x8B9A6F0
+//       ??_7LocalPlayer@@6B@       RVA 0x8C97B08
+//       ??_7Actor@@6B@             RVA 0x8F39A20
+//       ??_7Level@@6B@             RVA 0x8FE28B0
+//       ??_7Dimension@@6B@         RVA 0x908DE38
+//       ??_7BlockSource@@6B@       RVA 0x8FDDFD8
+//       ??_7Container@@6B@         RVA 0x8ACD800
+//       ??_7Player@@6B@            RVA 0x8FA6348
+//       ??_7Mob@@6B@               RVA 0x8F747C0
+//       ??_7Minecraft@@6B@         RVA 0x8F39F00
+//       ??_7ItemStack@@6B@         RVA 0x8FD9F38
+//       ??_7ItemActor@@6B@         RVA 0x8FD0BA8
+//
+//   上一版这批值整体偏 +0x1000（Actor 偏 +0x1010），BlockSource 干脆是另一个
+//   地址 —— 那是上一版客户端的布局。这个 build 的 .text 段比上一版大
+//   23MB，节数也不同，两者不能混用。
 //
 //   probe.log 里有完整的 12 个类的 TypeDescriptor / COL / vtable 三元组。
 //
@@ -274,6 +287,7 @@
 
 #include <cstdint>
 
+#include "log.h"
 #include "memory.h"
 
 namespace xiaoyu {
@@ -281,6 +295,27 @@ namespace sdk {
 
 // ── 静态全局 ────────────────────────────────────────────────────
 constexpr uintptr_t kLocalPlayerGlobalRva = 0x0B6E9648;
+
+// ── 本 build 的 vftable RVA（从 IDA 符号库按类名读出的真值）────────
+//
+// 这些值是「对象第一个指针 == Base()+RVA」的判据，用来在运行时确认
+// 我们手里的指针确实是那个类的实例。客户端一换 build 就会全部失效，
+// 所以 ChainReport() 会把每一个比对结果写进日志 —— 只要有一行 MISMATCH，
+// 就说明这份 DLL 不是这个客户端的，别再去调上层逻辑。
+namespace vt {
+constexpr uintptr_t kClientInstance = 0x8B9A6F0;
+constexpr uintptr_t kLocalPlayer    = 0x8C97B08;
+constexpr uintptr_t kActor          = 0x8F39A20;
+constexpr uintptr_t kLevel          = 0x8FE28B0;
+constexpr uintptr_t kDimension      = 0x908DE38;
+constexpr uintptr_t kBlockSource    = 0x8FDDFD8;
+constexpr uintptr_t kContainer      = 0x8ACD800;
+constexpr uintptr_t kPlayer         = 0x8FA6348;
+constexpr uintptr_t kMob            = 0x8F747C0;
+constexpr uintptr_t kMinecraft      = 0x8F39F00;
+constexpr uintptr_t kItemStack      = 0x8FD9F38;
+constexpr uintptr_t kItemActor      = 0x8FD0BA8;
+}  // namespace vt
 
 // ── LocalPlayer / Actor 字段 ────────────────────────────────────
 constexpr uintptr_t kOffPos = 0x0CE0;
@@ -390,6 +425,56 @@ inline bool VtableIs(uintptr_t obj, uintptr_t rva) {
     if (obj == 0) return false;
     const uintptr_t vt = mem::ReadPtr(obj);
     return vt == mem::Base() + rva;
+}
+
+// 把整条链路的 vtable 逐个比对一遍，写进日志。
+//
+// 为什么要这个：客户端一换 build，所有 RVA 和成员偏移同时失效，而症状
+// 只是"ESP 不画了"——从外面看和"没进世界 / 没玩家 / 投影算错"完全一样。
+// 有一次这样的日志，就能一眼分清是"这份 DLL 不是这个客户端的"还是
+// "逻辑写错了"。判据很硬：对象的第一个指针是不是本 build 的 vftable。
+//
+// 只在拿到 LocalPlayer 之后调（菜单界面全局为空，会全是 0，没有意义）。
+inline void ChainReport(const char* why) {
+    const uintptr_t lp = LocalPlayer();
+    if (lp == 0) {
+        LogLine("[sdk] 链路自检(%s)：LocalPlayer 为空，跳过", why ? why : "-");
+        return;
+    }
+    struct Hop {
+        const char* name;
+        uintptr_t obj;
+        uintptr_t rva;
+    };
+    const uintptr_t bs = BlockSourceOf(lp);
+    const uintptr_t dm = DimensionOf(lp);
+    const uintptr_t lv = LevelOf(lp);
+    const uintptr_t mc = MinecraftOf(lp);
+    const uintptr_t ci = ClientInstanceOf(lp);
+    const Hop hops[] = {
+        {"LocalPlayer", lp, vt::kLocalPlayer},
+        {"BlockSource", bs, vt::kBlockSource},
+        {"Dimension", dm, vt::kDimension},
+        {"Level", lv, vt::kLevel},
+        {"Minecraft", mc, vt::kMinecraft},
+        {"ClientInstance", ci, vt::kClientInstance},
+    };
+    int bad = 0;
+    for (int i = 0; i < (int)(sizeof(hops) / sizeof(hops[0])); ++i) {
+        const uintptr_t got = hops[i].obj ? mem::ReadPtr(hops[i].obj) : 0;
+        const uintptr_t want = mem::Base() + hops[i].rva;
+        const bool ok = (got == want);
+        if (!ok) ++bad;
+        LogLine("[sdk] 链路自检(%s) %-14s obj=0x%llX vtable=0x%llX 期望=0x%llX %s",
+                why ? why : "-", hops[i].name, (unsigned long long)hops[i].obj,
+                (unsigned long long)got, (unsigned long long)want,
+                ok ? "OK" : "MISMATCH");
+    }
+    LogLine("[sdk] 链路自检(%s) 结论：%d/%d 命中%s", why ? why : "-",
+            (int)(sizeof(hops) / sizeof(hops[0])) - bad,
+            (int)(sizeof(hops) / sizeof(hops[0])),
+            bad == 0 ? "，这份 DLL 与本客户端匹配"
+                     : "，有 MISMATCH —— 这份 DLL 不是这个 build 的");
 }
 
 // ══════════════════════════════════════════════════════════════════

@@ -337,6 +337,16 @@ void Render() {
         return;
     }
 
+    // 一次性的「这份 DLL 和这个客户端是不是同一个 build」自检。
+    // 只在第一次拿到 LocalPlayer 时跑一遍，把整条链路的 vtable 逐个比对
+    // 写进日志。换 build 之后第一件事就是看这一段：任何一行 MISMATCH
+    // 都说明后面所有偏移都不可信，不用再去猜 ESP 为什么不画。
+    static bool s_chain_done = false;
+    if (!s_chain_done) {
+        s_chain_done = true;
+        sdk::ChainReport("ESP");
+    }
+
     static sdk::ActorEntry actors[512];
     const int n = sdk::EnumActors(actors, 512, lp);
     g_last_actors = n;
