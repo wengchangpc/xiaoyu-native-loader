@@ -21,6 +21,7 @@
 #include "log.h"
 #include "modules.h"
 #include "render.h"
+#include "sdk.h"
 
 namespace xiaoyu {
 namespace gui {
@@ -1600,6 +1601,37 @@ void DrawHud() {
         render::Text(buf, bx, by, tw, th, ts, render::RgbaF(L.r, L.g, L.b, L.alpha),
                      ALIGN_LEFT, true);
         HudEditBox(cps_idx, bx, by, tw, th, false);
+    }
+
+    // CoordDisplay：玩家坐标。
+    //
+    // 数据走 sdk 那条已经跑通的链路（LocalPlayer -> mPos），和 ESP 同一个来源。
+    // 它同时也是"链路还活着吗"最直观的指示：数字一直在跳就说明读到了，
+    // 一直是 0 / 不动就说明链路断了 —— 比翻日志快。
+    // 原版 Python（module/visual/coorddisplay.py）默认 posx=0.01 posy=0.10，
+    // 文本格式 "X=%.1f Y=%.1f Z=%.1f"。
+    int cd_idx = FindFeatureByName(L"CoordDisplay");
+    if (cd_idx >= 0 && cfg::ModuleOn(cd_idx)) {
+        const uintptr_t lp = sdk::LocalPlayer();
+        sdk::Vec3 pos = {0.0f, 0.0f, 0.0f};
+        if (lp != 0 && sdk::LocalPlayerPos(lp, &pos)) {
+            const HudLook L = ReadHudLook(cd_idx, 0.01f, 0.10f, 1.0f, theme::kAccent);
+            wchar_t buf[96];
+            swprintf_s(buf, L"X=%.1f Y=%.1f Z=%.1f", pos.x, pos.y, pos.z);
+            const float ts = 10.0f * s * L.scale;
+            const float tw = render::Measure(buf, ts, true) + 4.0f * s;
+            const float th = ts * 1.4f;
+            float bx = L.x;
+            float by = L.y;
+            if (!g_hud_edit) ClampHudBox(&bx, &by, tw, th);
+            if (L.bg) {
+                render::RoundRect(bx - 2.0f * s, by, tw + 4.0f * s, th, 2.0f * s,
+                                  render::RgbaF(0.0f, 0.0f, 0.0f, L.bg_alpha * L.alpha));
+            }
+            render::Text(buf, bx, by, tw, th, ts,
+                         render::RgbaF(L.r, L.g, L.b, L.alpha), ALIGN_LEFT, true);
+            HudEditBox(cd_idx, bx, by, tw, th, false);
+        }
     }
 
     // ArrayList：已开启功能列表。
