@@ -37,7 +37,12 @@
 namespace xiaoyu {
 namespace {
 
-const wchar_t* kClassName = L"XiaoyuOverlayWnd";
+// ★ 窗口类名里不能出现任何品牌词。
+//
+// 反作弊在进程内或进程外做一次 EnumWindows + GetClassNameW，就能把窗口类名
+// 一条条读出来；类名里带 "Xiaoyu" 等于把名字写在额头上，字符串签名一扫就中。
+// 这里用一个平淡的、看不出是外挂的通用名，标题留空（很多工具窗口本来就没标题）。
+const wchar_t* kClassName = L"FrameHostWnd";
 
 HWND g_game = nullptr;     // 游戏主窗口
 HWND g_overlay = nullptr;  // 我们的覆盖窗口
@@ -104,6 +109,45 @@ HWND FindGameWindow() {
     ctx.best_area = 0;
     EnumWindows(EnumProc, reinterpret_cast<LPARAM>(&ctx));
     return ctx.best;
+}
+
+// ── 单实例守卫 ─────────────────────────────────────────────────
+// 反复注入会把多个 overlay 同时拉起来。实测同一个游戏进程里堆到过 19 个
+// （每注入一次 espN.dll 就多一个），后果全是鼠标相关的：
+//   1) 每个实例都 RegisterRawInputDevices 抢一次鼠标，最后注册的那个窗口
+//      才是 Raw Input 的接收者 —— 而它未必是真正在渲染面板、真正可点击的
+//      那个实例，于是"面板在那儿但点不动"；
+//   2) 每个实例都各推一轮 ShowCursor(TRUE)，关面板时又各退自己那一份，
+//      计数一乱就表现为"光标乱闪"或"关掉面板后光标还留着"；
+//   3) N 个置顶窗口叠着，z 序最高的那个吃掉所有点击。
+//
+// 所以只允许一个实例。判定方式用"枚举本进程里有没有同类名的窗口"：
+// 不引入新的命名内核对象（命名互斥体在 \BaseNamedObjects 里是可枚举的，
+// 属于白送的指纹），也不额外留痕。
+// 注意必须比对 PID —— 玩家可能开着两个游戏进程，那种情况应该各有一个面板。
+struct OwnCtx {
+    DWORD pid;
+    HWND found;
+};
+
+BOOL CALLBACK OwnEnumProc(HWND hwnd, LPARAM lp) {
+    OwnCtx* ctx = reinterpret_cast<OwnCtx*>(lp);
+    DWORD pid = 0;
+    GetWindowThreadProcessId(hwnd, &pid);
+    if (pid != ctx->pid) return TRUE;
+    wchar_t cls[64] = {0};
+    if (GetClassNameW(hwnd, cls, 64) == 0) return TRUE;
+    if (wcscmp(cls, kClassName) != 0) return TRUE;
+    ctx->found = hwnd;
+    return FALSE;   // 找到一个就够了
+}
+
+HWND FindOwnOverlay() {
+    OwnCtx ctx;
+    ctx.pid = GetCurrentProcessId();
+    ctx.found = nullptr;
+    EnumWindows(OwnEnumProc, reinterpret_cast<LPARAM>(&ctx));
+    return ctx.found;
 }
 
 // ── 鼠标 Raw Input 接管 ─────────────────────────────────────────
@@ -260,43 +304,48 @@ void ToggleGameCursorRelease(const char* why, bool verify) {
     g_unlock_check_at = GetTickCount64() + 400;
 }
 
-// 把光标锁在游戏客户区里。
-// 面板打开时游戏已经不管光标了，如果让它跑到窗口外点到别的窗口，
-// 游戏会失焦并弹出 Esc 菜单。窗口被移动/改尺寸后锁定区域会过期，
-// 所以调用方要定期重设。
-// 把光标锁在游戏客户区里 / 解锁。
+// 面板打开期间把光标"软"限制在游戏客户区里。
 //
-// ClipCursor 是**桌面级共享状态**，不是我们一个窗口的事：一旦残留，
-// 用户切到浏览器、聊天窗口时鼠标整个被困在游戏那块矩形里，手感就是
-// "鼠标一卡一卡"。所以判定条件必须收得很紧 ——
-// 只有「面板开着 且 游戏是前台」才锁，其余任何情况一律解锁，
-// 而且这套判定要放在主循环里每轮都跑（不能只放在"覆盖层可见"的分支里，
-// 游戏一进后台那个分支就不执行了，锁就永远解不掉）。
-bool g_clip_on = false;
-
-void UpdateCursorClip(bool want) {
-    if (!want) {
-        if (g_clip_on) {
-            ClipCursor(nullptr);
-            g_clip_on = false;
-        }
-        return;
-    }
+// ★ 这里以前用 ClipCursor，已经彻底弃用。原因是 ClipCursor 属于
+//   **桌面级共享状态**，不是我们一个窗口的事：一旦残留，用户切到浏览器、
+//   聊天窗口时鼠标整个被困在游戏那块矩形里，手感就是"鼠标一卡一卡"；
+//   而且它和游戏自己每帧的裁剪会互相打架，"是否已解锁"的检测永远不可信。
+//
+//   改成每帧软钳：光标跑出客户区就 SetCursorPos 拉回来。只在我们自己
+//   占着前台、且面板开着的时候动手，窗口一失焦立刻什么都不做 ——
+//   不存在需要"清理"的残留状态，因为根本没有设置任何全局状态。
+//
+//   这一版固定用系统光标（不自绘），所以钳位就是保证指针不会跑出游戏窗口
+//   之后"看不见也点不到"的唯一手段。
+void KeepCursorInside(bool want) {
+    if (!want) return;
     if (g_game == nullptr || !IsWindow(g_game)) return;
-    if (GetForegroundWindow() != g_game) {
-        if (g_clip_on) {
-            ClipCursor(nullptr);
-            g_clip_on = false;
-        }
-        return;
-    }
+    if (GetForegroundWindow() != g_game) return;
+
     RECT cr = {};
     if (!GetClientRect(g_game, &cr)) return;
     POINT tl = {0, 0};
     if (!ClientToScreen(g_game, &tl)) return;
-    RECT clip = {tl.x, tl.y, tl.x + (cr.right - cr.left), tl.y + (cr.bottom - cr.top)};
-    ClipCursor(&clip);
-    g_clip_on = true;
+
+    const int w = (int)(cr.right - cr.left);
+    const int h = (int)(cr.bottom - cr.top);
+    if (w < 16 || h < 16) return;
+
+    // 留 1px 余量，免得正好压在边框上被判成"在外面"来回弹
+    const int l = tl.x + 1;
+    const int t = tl.y + 1;
+    const int r = tl.x + w - 2;
+    const int b = tl.y + h - 2;
+
+    POINT p;
+    if (!GetCursorPos(&p)) return;
+    if (p.x >= l && p.x <= r && p.y >= t && p.y <= b) return;
+
+    if (p.x < l) p.x = l;
+    if (p.x > r) p.x = r;
+    if (p.y < t) p.y = t;
+    if (p.y > b) p.y = b;
+    SetCursorPos(p.x, p.y);
 }
 
 // 面板打开期间让**系统光标**保持可见（用户要求只用真实光标，不自绘）。
@@ -312,8 +361,11 @@ bool g_cursor_forced = false;
 int g_show_pushed = 0;
 const int kMaxCursorPush = 6;    // 上限：万一被别的东西反复隐藏，也别把计数推上天
 
+bool g_cursor_gave_up = false;   // 只在"推到上限还看不见"时记一次日志
+
 void SetSystemCursor(bool want) {
     if (!want) {
+        g_cursor_gave_up = false;
         if (!g_cursor_forced) return;
         g_cursor_forced = false;
         for (int i = 0; i < g_show_pushed; ++i) ShowCursor(FALSE);
@@ -336,6 +388,14 @@ void SetSystemCursor(bool want) {
         LogLine("[overlay] 面板打开，系统光标置为可见（推了 %d 次）", g_show_pushed);
     } else if (n > 0) {
         LogLine("[overlay] 游戏把光标藏回去了，补推 %d 次", n);
+    }
+    // 推到上限仍看不见：说明压着光标的是游戏那个线程自己的计数，
+    // 我们从覆盖层线程推不动它。只记一次，免得日志刷屏。
+    if (!g_cursor_gave_up && g_show_pushed >= kMaxCursorPush &&
+        !input::CursorVisible()) {
+        g_cursor_gave_up = true;
+        LogLine("[overlay] 推到上限 %d 次系统光标仍不可见 —— 面板里会看不到指针",
+                kMaxCursorPush);
     }
 }
 
@@ -377,9 +437,23 @@ void UpdateInputMode() {
         if (cfg::TakeFocus()) TakeForeground();
         if (cfg::AutoUnlock()) ToggleGameCursorRelease("打开面板", true);
         HookMouseToOverlay(true);
+
         // 顺便让渲染层在下一帧做一次像素自检，把面板的实际绘制范围写进日志
         render::RequestSelfCheck();
+
+        // ★ 指针方案：一律用**系统光标**，不自绘。
+        //
+        //   能这么做的前提是：Raw Input 被我们接管之后，游戏收不到鼠标事件，
+        //   也就不会反复调 ShowCursor(FALSE) 把光标再藏回去 —— 所以下面
+        //   SetSystemCursor 推上去的那几次能稳住，不会每帧和游戏互相抵消。
+        //
+        //   以前试过"相对光标 + 自绘指针"，问题是屏幕上会出现两个指针
+        //   （系统那个仍在动），手感很差。现在明确不用了，g_relative 恒为 false。
+        input::SetRelativeMode(false);
+        LogLine("[overlay] 指针 = 系统光标（SystemCursorVisible=%d）",
+                input::CursorVisible() ? 1 : 0);
     } else {
+        input::SetRelativeMode(false);
         HookMouseToOverlay(false);
         // 把前台还给游戏，视角控制立刻恢复
         if (cfg::TakeFocus()) ReleaseToGame();
@@ -538,7 +612,7 @@ bool CreateOverlayWindow() {
     DWORD ex = WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW |
                WS_EX_NOACTIVATE | WS_EX_TRANSPARENT;
 
-    g_overlay = CreateWindowExW(ex, kClassName, L"xiaoyu overlay", WS_POPUP,
+    g_overlay = CreateWindowExW(ex, kClassName, L"", WS_POPUP,
                                 0, 0, 100, 100, nullptr, nullptr, inst, nullptr);
     if (g_overlay == nullptr) {
         LogLine("[overlay] CreateWindowEx failed err=%lu", (unsigned long)GetLastError());
@@ -550,6 +624,22 @@ bool CreateOverlayWindow() {
 
 void RenderOnce() {
     if (!render::BeginFrame()) return;
+
+    // ★ 面板开着时先铺一层 alpha=1 的底。
+    //
+    // 分层窗口的命中测试是**按 alpha 判的**：alpha=0 的像素对鼠标完全透明，
+    // 点击会直接漏给底下的游戏窗口。表现就是在面板之间的空隙上点一下，
+    // 面板没反应，游戏那边却挖了个方块 / 挥了一刀。
+    //
+    // 铺满 1/255 的黑肉眼看不出来（对比度差异远低于 1 个色阶），
+    // 但整块客户区就都算"我们的"，点击不会再漏下去。
+    // 只在 gui::WantsMouse() 为真时铺 —— 面板收起时必须有穿透，
+    // 否则游戏里就点不动了。
+    if (gui::WantsMouse()) {
+        render::Rect(0.0f, 0.0f, (float)render::Width(), (float)render::Height(),
+                     render::Rgba(0, 0, 0, 1));
+    }
+
     // 画三层，顺序就是覆盖关系：ESP（世界里的东西）→ 脚本列表 → 面板。
     // 脚本那一层是给外部调试用的：管道客户端每帧提交一批框/线/字，
     // 于是改投影参数只要重跑脚本，不用重编译 DLL。
@@ -623,11 +713,11 @@ int OverlayMain() {
 
         FollowGameWindow();
 
-        // 光标锁定的唯一决策点：每轮都跑，条件不满足就立刻解锁。
+        // 光标的唯一决策点：每轮都跑，条件不满足就什么都不做。
         // 绝对不要挪进下面 if (g_visible) 里面 —— 游戏一进后台那个分支
-        // 就不执行了，ClipCursor 会一直残留，用户整个桌面的光标都被困住。
-        UpdateCursorClip(g_visible && gui::WantsMouse());
-        // 系统光标同理：面板或 HUD 布局模式开着才需要它可见，
+        // 就不执行了，桌面光标会一直被困在游戏窗口里出不来。
+        KeepCursorInside(g_visible && gui::WantsMouse());
+        // 系统光标：面板或 HUD 布局模式开着才需要它可见，
         // 其余情况把显示计数还回去
         SetSystemCursor(g_visible && gui::WantsMouse());
 
@@ -729,11 +819,14 @@ int OverlayMain() {
         }
     }
 
-    // 退出前必须把鼠标 Raw Input 还给游戏，否则游戏视角会一直锁着；
-    // 光标锁定同理，不解的话整个桌面的光标都出不了游戏窗口。
-    UpdateCursorClip(false);
-    ClipCursor(nullptr);          // 双保险：确认桌面级剪裁一定被清掉
-    g_clip_on = false;
+    // 退出前必须把鼠标 Raw Input 还给游戏，否则游戏视角会一直锁着。
+    // 我们这一版已经不设置任何"需要清理"的光标状态了（ClipCursor 和
+    // ShowCursor 的记账都去掉了），下面那次 ClipCursor(nullptr) 只是
+    // 兜底：老版本实例留在系统里的桌面级剪裁得有人擦掉。
+    ClipCursor(nullptr);
+    // 相对模式必须关掉，否则 input 那边还会继续把 Raw Input 位移累加到
+    // 一个没人看的坐标上
+    input::SetRelativeMode(false);
     // 光标显示计数也必须还原，否则游戏里会永远多出一个光标的额度
     SetSystemCursor(false);
     HookMouseToOverlay(false);
@@ -768,6 +861,15 @@ DWORD WINAPI OverlayThread(LPVOID param) {
 }  // namespace
 
 void StartOverlay() {
+    // 单实例守卫（理由见上面 FindOwnOverlay 的说明）。
+    // 必须在起线程之前判 —— 线程一旦跑起来就已经建好窗口了。
+    HWND exist = FindOwnOverlay();
+    if (exist != nullptr) {
+        LogLine("[overlay] 本进程已有覆盖层在跑 hwnd=%p，本次不重复创建", (void*)exist);
+        InterlockedExchange(&g_life, 2);   // 让 StopOverlay 立刻返回，不用等线程
+        return;
+    }
+
     HANDLE th = CreateThread(nullptr, 0, OverlayThread, nullptr, 0, nullptr);
     if (th != nullptr) {
         CloseHandle(th);
