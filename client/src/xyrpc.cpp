@@ -657,7 +657,24 @@ void CmdProjTest(HANDLE h, char** ctx) {
     const uintptr_t ci = sdk::ClientInstanceOf(lp);
     sdk::GameCamera gc;
     if (!sdk::ReadGameCamera(ci, &gc)) {
-        SendErr(h, "读不到摄像机矩阵（链路或偏移不对）");
+        // 失败时把每一项都打出来 —— 只说"读不到"没法定位是哪条判据拒的
+        float m[9] = {0};
+        const bool mok = mem::Read(ci + sdk::kOffCiViewMatrix, m, sizeof(m));
+        float p00 = 0.0f, p11 = 0.0f;
+        const bool pok = mem::Read(ci + sdk::kOffCiProjection, &p00) &&
+                         mem::Read(ci + sdk::kOffCiProjection + 0x14, &p11);
+        sdk::Vec3 cam = {0.0f, 0.0f, 0.0f};
+        const bool cok = mem::Read(ci + sdk::kOffCiCameraPos, &cam, sizeof(cam));
+        const float n0 = m[0] * m[0] + m[3] * m[3] + m[6] * m[6];
+        const float n1 = m[1] * m[1] + m[4] * m[4] + m[7] * m[7];
+        char line[512];
+        sprintf_s(line,
+                  "读不到摄像机矩阵 ci=0x%llX mok=%d pok=%d cok=%d m=%.3f,%.3f,%.3f n0=%.4f "
+                  "n1=%.4f p00=%.4f p11=%.4f cam=%.2f,%.2f,%.2f pos_ok=%d size=%d\n",
+                  (unsigned long long)ci, (int)mok, (int)pok, (int)cok,
+                  m[0], m[1], m[2], n0, n1, p00, p11, cam.x, cam.y, cam.z,
+                  (int)sdk::PlausiblePos(cam), (int)sizeof(sdk::Vec3));
+        SendErr(h, line);
         return;
     }
     const int w = 1215;
