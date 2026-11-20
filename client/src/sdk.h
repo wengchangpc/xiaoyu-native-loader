@@ -1244,6 +1244,9 @@ inline void ActorSetTick() {
     const uint64_t now = GetTickCount64();
     const uint64_t kFastMs = 1500;     // 快路径间隔
     const uint64_t kFullMs = 60000;    // 全量补扫间隔（兜住新长出来的区段）
+    // 已经有学到的区段（比如 scanactor 先跑过一次）就先走快路径，
+    // 把第一次全量推迟到 kFullMs 之后 —— 起步就是几十秒的 I/O，能省就省。
+    if (s.last_full_ms == 0 && LearnedCount() > 0) s.last_full_ms = now;
     const bool need_full = (s.last_full_ms == 0) || (now - s.last_full_ms >= kFullMs);
     const bool need_fast = (s.last_fast_ms == 0) || (now - s.last_fast_ms >= kFastMs);
     if (!need_full && !need_fast) return;

@@ -529,6 +529,117 @@ void CmdFocus(HANDLE h, char** ctx) {
     SendOk(h, msg, (int)strlen(msg));
 }
 
+// shot [path] —— 把游戏窗口那一片屏幕抓成 BMP。
+//
+// 为什么要它：注入的鼠标事件到底有没有改变视角，光看内存是循环论证
+// （我们要找的就是那个字段）。抓两张图比一下像素，是最直接的事实来源，
+// 后面验证 ESP 画得对不对也靠它。
+//
+// 用屏幕 DC 而不是 PrintWindow：D3D12 的交换链不在 GDI 里，
+// PrintWindow 抓回来基本是全黑。CAPTUREBLT 是为了把分层窗口
+// （我们自己的覆盖层）也一起抓进来 —— 验证 ESP 时必须抓到它。
+void CmdShot(HANDLE h, char** ctx) {
+    char* a = NextTok(ctx);
+    const char* path = (a != nullptr) ? a : "C:\\Xiaoyu\\shot.bmp";
+
+    FocusCtx c;
+    c.pid = GetCurrentProcessId();
+    c.found = nullptr;
+    EnumWindows(FocusEnumProc, (LPARAM)&c);
+    if (c.found == nullptr) { SendErr(h, "没找到游戏窗口"); return; }
+
+    RECT rc;
+    if (GetWindowRect(c.found, &rc) == 0) { SendErr(h, "GetWindowRect 失败"); return; }
+    const int w = rc.right - rc.left;
+    const int hgt = rc.bottom - rc.top;
+    if (w <= 0 || hgt <= 0 || w > 4096 || hgt > 4096) { SendErr(h, "尺寸异常"); return; }
+
+    HDC sdc = GetDC(nullptr);
+    if (sdc == nullptr) { SendErr(h, "GetDC 失败"); return; }
+
+    BITMAPINFO bi = {};
+    bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bi.bmiHeader.biWidth = w;
+    bi.bmiHeader.biHeight = -hgt;          // 负数 = top-down，省掉写文件时翻行
+    bi.bmiHeader.biPlanes = 1;
+    bi.bmiHeader.biBitCount = 32;
+    bi.bmiHeader.biCompression = BI_RGB;
+
+    void* bits = nullptr;
+    HDC mdc = CreateCompatibleDC(sdc);
+    HBITMAP bmp = CreateDIBSection(sdc, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    if (mdc == nullptr || bmp == nullptr || bits == nullptr) {
+        if (bmp != nullptr) DeleteObject(bmp);
+        if (mdc != nullptr) DeleteDC(mdc);
+        ReleaseDC(nullptr, sdc);
+        SendErr(h, "建 DIB 失败");
+        return;
+    }
+    HGDIOBJ old = SelectObject(mdc, bmp);
+    const BOOL drew = BitBlt(mdc, 0, 0, w, hgt, sdc, rc.left, rc.top, SRCCOPY | CAPTUREBLT);
+    SelectObject(mdc, old);
+    DeleteDC(mdc);
+    ReleaseDC(nullptr, sdc);
+
+    if (!drew) {
+        DeleteObject(bmp);
+        SendErr(h, "BitBlt 失败");
+        return;
+    }
+
+    // 写 BMP：54 字节头 + 像素。biHeight 写负数（top-down），
+    // 和内存里一致，不用翻行。
+    const DWORD pix = (DWORD)w * (DWORD)hgt * 4u;
+    BITMAPFILEHEADER fh = {};
+    fh.bfType = 0x4D42;   // 'BM'
+    fh.bfOffBits = sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER);
+    fh.bfSize = fh.bfOffBits + pix;
+
+    HANDLE fp = CreateFileA(path, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                            FILE_ATTRIBUTE_NORMAL, nullptr);
+    bool ok = fp != INVALID_HANDLE_VALUE;
+    if (ok) {
+        DWORD wrote = 0;
+        ok = WriteFile(fp, &fh, sizeof(fh), &wrote, nullptr) && wrote == sizeof(fh);
+        if (ok) ok = WriteFile(fp, &bi.bmiHeader, sizeof(BITMAPINFOHEADER), &wrote, nullptr);
+        if (ok) ok = WriteFile(fp, bits, pix, &wrote, nullptr) && wrote == pix;
+        CloseHandle(fp);
+    }
+    DeleteObject(bmp);
+
+    char msg[192];
+    sprintf_s(msg, "shot %s %dx%d ok=%d\n", path, w, hgt, (int)ok);
+    SendOk(h, msg, (int)strlen(msg));
+}
+
+// key <vk十六进制> [按住毫秒] —— 合成一次按键。
+// 用途和 look 一样，是探针：验证「注入的输入到底有没有到游戏」。
+// 空格能让玩家跳起来，位置 y 会变，这是最不容易误判的信号。
+void CmdKey(HANDLE h, char** ctx) {
+    char* a = NextTok(ctx);
+    if (a == nullptr) { SendErr(h, "key <vk_hex> [hold_ms]"); return; }
+    const int vk = (int)strtol(a, nullptr, 16);
+    int hold = 60;
+    if (char* b = NextTok(ctx)) hold = (int)strtol(b, nullptr, 10);
+    if (hold < 10) hold = 10;
+    if (hold > 3000) hold = 3000;
+    if (vk <= 0 || vk > 0xFF) { SendErr(h, "vk 1..FF"); return; }
+
+    INPUT in[2] = {};
+    in[0].type = INPUT_KEYBOARD;
+    in[0].ki.wVk = (WORD)vk;
+    in[1].type = INPUT_KEYBOARD;
+    in[1].ki.wVk = (WORD)vk;
+    in[1].ki.dwFlags = KEYEVENTF_KEYUP;
+    const UINT sent = SendInput(1, &in[0], sizeof(INPUT));
+    Sleep((DWORD)hold);
+    SendInput(1, &in[1], sizeof(INPUT));
+
+    char msg[96];
+    sprintf_s(msg, "key vk=0x%X hold=%d sent=%u\n", vk, hold, sent);
+    SendOk(h, msg, (int)strlen(msg));
+}
+
 void CmdRead(HANDLE h, char** ctx) {
     char* a = NextTok(ctx);
     char* b = NextTok(ctx);
@@ -841,6 +952,10 @@ bool Serve(HANDLE h) {
             CmdFocus(h, &ctx);
         } else if (strcmp(cmd, "lclick") == 0) {
             CmdLClick(h, &ctx);
+        } else if (strcmp(cmd, "shot") == 0) {
+            CmdShot(h, &ctx);
+        } else if (strcmp(cmd, "key") == 0) {
+            CmdKey(h, &ctx);
         } else if (strcmp(cmd, "write") == 0) {
             CmdWrite(h, &ctx);
         } else if (strcmp(cmd, "draw") == 0) {
@@ -859,7 +974,7 @@ bool Serve(HANDLE h) {
             CmdUnload(h, &ctx);
             return false;
         } else {
-            SendErr(h, "未知命令（ping/info/actors/scanfov/read/scan/scanactor/scanbench/actorlist/look/focus/lclick/who/write/draw/esp/fov/eye/runpy/inject/unload）");
+            SendErr(h, "未知命令（ping/info/actors/scanfov/read/scan/scanactor/scanbench/actorlist/look/focus/lclick/shot/key/who/write/draw/esp/fov/eye/runpy/inject/unload）");
         }
     }
 }
