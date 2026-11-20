@@ -37,6 +37,43 @@ volatile LONG g_stop = 0;
 volatile LONG g_clients = 0;
 HANDLE g_thread = nullptr;
 
+// ── PyRpc 面板的环形缓冲 ────────────────────────────────────────
+//
+// 把最近的命令和我方的应答原样画在游戏画面上，省得每次都去 tail
+// native.log。纯本地绘制：不读写任何游戏内存，反作弊侧完全无感。
+//
+// 并发模型：RPC 线程写、渲染线程读。写指针用 InterlockedIncrement。
+// 最坏情况是某行尾部写到一半被渲染线程看到，下一帧就被覆盖掉了 ——
+// 调试面板上完全无害，不值得为它加锁。
+constexpr int kPyLineCap = 48;
+constexpr int kPyLineLen = 128;
+
+char g_py_line[kPyLineCap][kPyLineLen];
+volatile LONG g_py_head = 0;
+volatile LONG g_py_n = 0;
+// showMessage=0 时干脆不记应答，免得应答把命令挤出环形缓冲。
+// 每帧由 RenderPyRpc 从配置刷新。
+volatile LONG g_py_show_msg = 1;
+
+void PyNote(char prefix, const char* s, int len) {
+    if (s == nullptr || len <= 0) return;
+    if (prefix == '<' && InterlockedCompareExchange(&g_py_show_msg, 0, 0) == 0) return;
+    const LONG seq = InterlockedIncrement(&g_py_head) - 1;
+    char* dst = g_py_line[seq % kPyLineCap];
+    int n = 0;
+    dst[n++] = prefix;
+    dst[n++] = ' ';
+    for (int i = 0; i < len && n < kPyLineLen - 1; ++i) {
+        const char c = s[i];
+        if (c == '\r' || c == '\n') break;              // 一条命令只占一行
+        dst[n++] = (c >= 0x20 && c < 0x7f) ? c : '.';
+    }
+    dst[n] = 0;
+    if (InterlockedCompareExchange(&g_py_n, 0, 0) < kPyLineCap) {
+        InterlockedIncrement(&g_py_n);
+    }
+}
+
 // ── 脚本绘制列表 ────────────────────────────────────────────────
 enum Kind { K_RECT = 0, K_FILL, K_LINE, K_TEXT };
 
@@ -84,12 +121,14 @@ void SendOk(HANDLE h, const void* data, int len) {
     int n = sprintf_s(hdr, "OK %d\n", len);
     WriteAll(h, hdr, n);
     if (len > 0 && data != nullptr) WriteAll(h, data, len);
+    if (len > 0 && data != nullptr) PyNote('<', (const char*)data, len);
 }
 
 void SendErr(HANDLE h, const char* msg) {
     char buf[512];
     int n = sprintf_s(buf, "ERR %s\n", msg ? msg : "?");
     WriteAll(h, buf, n);
+    PyNote('<', buf, n);
 }
 
 // 逐字节读到 '\n'。控制命令量很小，不值得为吞吐做优化。
@@ -1243,6 +1282,7 @@ bool Serve(HANDLE h) {
         char* ctx = line;
         char* cmd = NextTok(&ctx);
         if (cmd == nullptr) continue;
+        PyNote('>', line, n);
 
         if (strcmp(cmd, "ping") == 0) {
             SendOk(h, "pong", 4);
@@ -1404,6 +1444,62 @@ void RenderDrawList() {
         }
     }
     LeaveCriticalSection(&g_lock);
+}
+
+// ── PyRpc 面板 ──────────────────────────────────────────────────
+//
+// maxDisplay 当**字符预算**用：每行按 100 字符算能放几行（至少 3 行，
+// 最多把环形缓冲铺满）。80..2000 的区间对应 3..20 行，正好覆盖
+// 「瞄一眼刚才那条命令」到「翻一次完整调试记录」两种用法。
+//
+// 位置贴左下角：右上角是 ArrayList、左上角是 ESP 的最近实体日志，
+// 只有左下这块常年空着。
+void RenderPyRpc() {
+    const int fi = FindFeatureByName("PyRpc");
+    if (fi < 0 || !cfg::ModuleOn(fi)) return;
+
+    const int pi_max = FindParamByName(fi, "maxDisplay");
+    const int pi_msg = FindParamByName(fi, "showMessage");
+    const float max_chars = (pi_max >= 0) ? cfg::ParamValue(pi_max, 480.0f) : 480.0f;
+    InterlockedExchange(&g_py_show_msg, (pi_msg >= 0 && cfg::ParamValue(pi_msg, 1.0f) < 0.5f) ? 0 : 1);
+    // decode 是原版给二进制负载准备的（把 read 回来的字节解成可读形式）。
+    // 这里面板只展示控制命令，负载全是文本，没有可解的东西 —— 如实留着不假装支持。
+
+    const int n = (int)InterlockedCompareExchange(&g_py_n, 0, 0);
+    if (n <= 0) return;
+
+    int rows = (int)(max_chars / 100.0f);
+    if (rows < 3) rows = 3;
+    if (rows > n) rows = n;
+    if (rows > kPyLineCap) rows = kPyLineCap;
+
+    const float lh = 14.0f;
+    const float pad = 6.0f;
+    const float pw = 470.0f;
+    const float ph = rows * lh + pad * 2.0f;
+    const float px = 12.0f;
+    const float py = (float)render::Height() - ph - 12.0f;
+    if (py < 0.0f) return;   // 窗口还没建好，尺寸是 0
+
+    render::Rect(px, py, pw, ph, render::Rgba(8, 10, 16, 175));
+    render::Line(px, py, px + pw, py, 1.0f, render::Rgba(120, 200, 255, 110));
+
+    const LONG head = InterlockedCompareExchange(&g_py_head, 0, 0);
+    for (int i = 0; i < rows; ++i) {
+        const LONG seq = head - rows + i;
+        if (seq < 0) continue;
+        const char* src = g_py_line[seq % kPyLineCap];
+        if (src[0] == 0) continue;
+        wchar_t wbuf[kPyLineLen];
+        int k = 0;
+        for (; src[k] != 0 && k < kPyLineLen - 1; ++k) wbuf[k] = (wchar_t)(unsigned char)src[k];
+        wbuf[k] = 0;
+        // '>' 是我们收到的命令，用亮色；'<' 是发回去的应答，压暗一点
+        const bool is_req = (src[0] == '>');
+        const D2D1_COLOR_F c = is_req ? render::Rgba(160, 220, 255, 235)
+                                      : render::Rgba(150, 160, 175, 200);
+        render::Text(wbuf, px + pad, py + pad + i * lh, pw - pad * 2.0f, lh, 11.5f, c);
+    }
 }
 
 }  // namespace rpc

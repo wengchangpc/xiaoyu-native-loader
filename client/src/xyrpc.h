@@ -26,6 +26,10 @@ void Stop();
 // 覆盖层每帧调用，把脚本提交的绘制列表画出来（在 GUI 之前）
 void RenderDrawList();
 
+// 覆盖层每帧调用，画 PyRpc 面板（最近命令/应答）。
+// 纯本地绘制，不碰游戏内存；模块没开时直接返回。
+void RenderPyRpc();
+
 // 有没有挂着的客户端（调参时观察用）
 int ClientCount();
 

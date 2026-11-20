@@ -1681,7 +1681,7 @@ bool Implemented(const wchar_t* english_name) {
     // 把称号画在实体头顶，两者都要读游戏状态，现在做不到，别谎报成已实现。
     static const wchar_t* kGuiOnly[] = {
         L"ClickGui", L"ConfigSave", L"FPS",      L"CPS",
-        L"ArrayList", L"Keystrokes", L"Notification", L"Debug",
+        L"ArrayList", L"Keystrokes", L"Notification", L"Debug", L"PyRpc",
     };
     for (size_t i = 0; i < sizeof(kGuiOnly) / sizeof(kGuiOnly[0]); ++i) {
         if (wcscmp(kGuiOnly[i], english_name) == 0) return true;

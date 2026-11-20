@@ -615,6 +615,7 @@ void RenderOnce() {
     esp::Render();
     esp::RenderExtras();
     rpc::RenderDrawList();
+    rpc::RenderPyRpc();
     gui::OnFrame();
     render::EndFrame();
 }
