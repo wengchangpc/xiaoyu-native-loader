@@ -285,6 +285,8 @@
 //         进程内读自己的内存不受影响。
 #pragma once
 
+#include <windows.h>
+
 #include <cstdint>
 
 #include "log.h"
@@ -393,13 +395,19 @@ inline bool HasVtable(uintptr_t p, uintptr_t vt_rva) {
 //   ② 主模块映像里找「值 == 这个地址」的位置 → 就是持有它的全局变量
 // 两跳都不依赖任何预先知道的偏移，只有 vftable RVA 来自符号表（可靠）。
 //
-// 只在硬编码偏移失效时才跑，结果缓存在 g_lp_global_rva 里。堆扫描要几秒，
-// 绝不能每帧做。
+// 只在硬编码偏移失效时才跑，结果缓存在 LpState() 里。
+//
+// ★ 扫描必须放后台线程。全堆几 GB，即使 4MB 一块 + memchr 加速也要几十秒，
+//   在渲染线程里做等于把游戏冻住 —— 用户只会看到画面卡死然后以为崩了。
+//   所以这里拆成「主线程只查状态」+「后台线程扫描」，扫描期间 ESP 不画，
+//   但游戏完全正常。
 struct LpLocate {
-    uintptr_t global_rva = 0;   // 反查出来的全局槽位 RVA（0 = 还没找到）
-    uintptr_t cached_lp = 0;    // 上次读到的对象地址
-    bool tried = false;         // 已经扫过了（失败也不重复扫）
-    bool ok = false;
+    volatile LONG state = 0;    // 0=还没开始 1=扫描中 2=成功 3=失败
+    uintptr_t global_rva = 0;   // 反查出来的全局槽位 RVA
+    uintptr_t cached_lp = 0;
+    size_t scanned_mb = 0;
+    int tries = 0;              // 已经扫了几次
+    ULONGLONG next_try = 0;     // 下次允许重扫的时间点
 };
 
 inline LpLocate& LpState() {
@@ -407,13 +415,14 @@ inline LpLocate& LpState() {
     return s;
 }
 
-// 在堆里找 LocalPlayer 真身。命中可能有多个（被别处缓存的同一对象），
-// 逐个验证：必须是 LocalPlayer vtable，且能从它走到 BlockSource 候选。
-inline uintptr_t FindLocalPlayerObject() {
+// 在堆里找 LocalPlayer 真身。命中可能有多个（别处也缓存了同一个指针），
+// 逐个验证：首字必须正好是 LocalPlayer 的 vftable。
+inline uintptr_t FindLocalPlayerObject(size_t* scanned_out) {
     const uint64_t needle = (uint64_t)(mem::Base() + vt::kLocalPlayer);
     mem::HeapHit hits[16];
     size_t scanned = 0;
     const int n = mem::ScanHeapQword(&needle, 1, hits, 16, &scanned);
+    if (scanned_out != nullptr) *scanned_out = scanned;
     LogLine("[sdk] 扫堆找 LocalPlayer：扫了 %.1f MB，命中 %d 个",
             (double)scanned / (1024.0 * 1024.0), n);
     for (int i = 0; i < n; ++i) {
@@ -430,20 +439,72 @@ inline uintptr_t FindGlobalHolding(uintptr_t obj) {
     const int n = mem::FindAllQword((uint64_t)obj, hits, 64, 0, 0);
     const uintptr_t base = mem::Base();
     LogLine("[sdk] 反查持有 0x%llX 的槽位：%d 处", (unsigned long long)obj, n);
-    for (int i = 0; i < n; ++i) {
-        const uintptr_t rva = hits[i] - base;
-        LogLine("[sdk]   rva=0x%llX", (unsigned long long)rva);
-    }
-    // 全局变量在数据段：优先取 RVA 最大的那批（.data 在 .text 后面）。
-    // 排除掉落在代码段里的命中（那些是指令立即数，不是变量）。
+    // 全局变量在数据段：代码段里的命中都是 `mov reg, imm64` 的立即数，
+    // 直接排除。剩下的取 RVA 最大的那个（.data 在 .text 后面）。
     uintptr_t best = 0;
     for (int i = 0; i < n; ++i) {
         const uintptr_t rva = hits[i] - base;
-        if (rva < kCodeEndRva) continue;         // 代码段里的不是全局
+        LogLine("[sdk]   rva=0x%llX%s", (unsigned long long)rva,
+                rva < kCodeEndRva ? "（代码段，跳过）" : "");
+        if (rva < kCodeEndRva) continue;
         if (rva > best) best = rva;
     }
-    if (best == 0 && n > 0) best = hits[0] - base;
+    if (best == 0 && n > 0) best = hits[n - 1] - base;
     return best;
+}
+
+inline DWORD WINAPI LocateThread(LPVOID param) {
+    (void)param;
+    LpLocate& st = LpState();
+    const ULONGLONG t0 = GetTickCount64();
+
+    size_t scanned = 0;
+    const uintptr_t obj = FindLocalPlayerObject(&scanned);
+    st.scanned_mb = scanned / (1024 * 1024);
+
+    if (obj != 0) {
+        const uintptr_t rva = FindGlobalHolding(obj);
+        if (rva != 0) {
+            st.global_rva = rva;
+            st.cached_lp = obj;
+            InterlockedExchange(&st.state, 2);
+            LogLine("[sdk] 定位成功：LocalPlayer 全局 RVA = 0x%llX，对象 = 0x%llX"
+                    "（耗时 %llu ms，扫了 %llu MB；把这个 RVA 写死到 "
+                    "kLocalPlayerGlobalRva 可以省掉每次扫描）",
+                    (unsigned long long)rva, (unsigned long long)obj,
+                    (unsigned long long)(GetTickCount64() - t0),
+                    (unsigned long long)st.scanned_mb);
+            return 0;
+        }
+    }
+    InterlockedExchange(&st.state, 3);
+    LogLine("[sdk] 自动定位失败（耗时 %llu ms）：%s",
+            (unsigned long long)(GetTickCount64() - t0),
+            obj == 0 ? "堆里没找到带 LocalPlayer vtable 的对象"
+                     : "找到对象但反查不到数据段里的槽位");
+    return 0;
+}
+
+inline void StartLocateAsync() {
+    LpLocate& st = LpState();
+    // 失败过也要允许重试：注入时人可能还在标题界面，那会儿堆里根本没有
+    // LocalPlayer 对象，扫一次必然是空的。等进了世界再给几次机会。
+    const LONG s = InterlockedCompareExchange(&st.state, 1, 1);
+    if (s == 1) return;                        // 正在扫
+    if (s == 2) return;                        // 已经成功，不用再扫
+    if (st.tries >= 4) return;                 // 扫够次数就放弃
+    if (s == 3 && GetTickCount64() < st.next_try) return;
+    if (InterlockedCompareExchange(&st.state, 1, s) != s) return;   // 抢到再走
+
+    ++st.tries;
+    st.next_try = GetTickCount64() + 8000;
+    HANDLE t = CreateThread(nullptr, 0, LocateThread, nullptr, 0, nullptr);
+    if (t != nullptr) {
+        CloseHandle(t);
+    } else {
+        LogLine("[sdk] 定位线程创建失败 err=%lu", (unsigned long)GetLastError());
+        InterlockedExchange(&st.state, 3);
+    }
 }
 
 // 拿当前 LocalPlayer。读不到（还在标题界面 / 全局还没写）返回 0。
@@ -461,54 +522,29 @@ inline uintptr_t LocalPlayer() {
 
     LpLocate& st = LpState();
 
-    // 已经反查出正确的全局槽位：直接用它
-    if (st.ok) {
+    // ① 反查成功：直接用那个槽位。对象重生/换世界时槽位不变、指针会变，
+    //    所以每次都要重新读出来验证，不能缓存对象地址本身。
+    if (InterlockedCompareExchange(&st.state, 2, 2) == 2) {
         const uintptr_t p = mem::ReadPtr(base + st.global_rva);
         if (HasVtable(p, vt::kLocalPlayer) || HasVtable(p, vt::kPlayer)) {
             st.cached_lp = p;
             return p;
         }
-        // 对象换了（重生 / 换世界）：槽位还对，只是里面的指针变了
-        const uintptr_t np = mem::ReadPtr(base + st.global_rva);
-        if (np != 0 && LooksLikeObject(np)) {
-            st.cached_lp = np;
-            return np;
-        }
-        // 槽位也失效了，重新反查
-        st.ok = false;
+        // 槽位还指着东西但已经不像对象了 —— 说明这一跳也过期了，
+        // 退回硬编码路径重新判定。
     }
 
-    // 先试硬编码偏移
+    // ② 硬编码偏移：必须验证首字是主模块里的 vtable 才认。
+    //    以前不做验证，读到已释放的堆内存也照用，症状是"ESP 什么都不画
+    //    但也不报错"，查了很久才发现。
     const uintptr_t raw = mem::ReadPtr(base + kLocalPlayerGlobalRva);
     if (HasVtable(raw, vt::kLocalPlayer) || HasVtable(raw, vt::kPlayer)) {
         st.cached_lp = raw;
         return raw;
     }
 
-    // 硬编码失效：跑一次自动定位（整个进程生命周期只跑一次）
-    if (!st.tried) {
-        st.tried = true;
-        LogLine("[sdk] 硬编码全局 0x%llX 失效（值=0x%llX，首字=0x%llX），"
-                "开始自动定位",
-                (unsigned long long)kLocalPlayerGlobalRva, (unsigned long long)raw,
-                (unsigned long long)mem::ReadPtr(raw));
-        const uintptr_t obj = FindLocalPlayerObject();
-        if (obj != 0) {
-            const uintptr_t rva = FindGlobalHolding(obj);
-            if (rva != 0) {
-                st.global_rva = rva;
-                st.ok = true;
-                st.cached_lp = obj;
-                LogLine("[sdk] 定位成功：LocalPlayer 全局 RVA = 0x%llX，对象 = 0x%llX"
-                        "（把 kLocalPlayerGlobalRva 改成这个值可以省掉每次扫描）",
-                        (unsigned long long)rva, (unsigned long long)obj);
-                return obj;
-            }
-        }
-        LogLine("[sdk] 自动定位失败：%s",
-                obj == 0 ? "堆里没找到带 LocalPlayer vtable 的对象"
-                         : "找到了对象但反查不到全局槽位");
-    }
+    // ③ 两者都不成立：拉起后台反查，本帧先返回 0（ESP 这帧不画，游戏不受影响）
+    StartLocateAsync();
     return 0;
 }
 
