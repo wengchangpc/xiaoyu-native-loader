@@ -405,6 +405,22 @@ void CmdLook(HANDLE h, char** ctx) {
 //   actorlist : 读后台线程已经扫好的列表（微秒级），位置每帧现读
 // ESP 用的就是后者。wait_ms 是等后台线程出第一份结果的耐心，
 // 默认 3000ms —— 第一次全量扫要几十秒，等不到就先返回空，别把调用方拖死。
+// lclick —— 合成一次左键按下+抬起。
+// 用途：游戏失焦会释放鼠标捕获，重新切回前台后要点一下才重新捕获，
+// 否则 look 转不动。只用于探针（找 mRot 的差分流程），不参与任何功能。
+void CmdLClick(HANDLE h, char** ctx) {
+    (void)ctx;
+    INPUT in[2] = {};
+    in[0].type = INPUT_MOUSE;
+    in[0].mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
+    in[1].type = INPUT_MOUSE;
+    in[1].mi.dwFlags = MOUSEEVENTF_LEFTUP;
+    const UINT sent = SendInput(2, in, sizeof(INPUT));
+    char msg[48];
+    sprintf_s(msg, "lclick sent=%u\n", sent);
+    SendOk(h, msg, (int)strlen(msg));
+}
+
 void CmdActorList(HANDLE h, char** ctx) {
     int wait_ms = 3000;
     if (char* a = NextTok(ctx)) wait_ms = (int)strtol(a, nullptr, 10);
@@ -453,6 +469,64 @@ void CmdActorList(HANDLE h, char** ctx) {
         s += line;
     }
     SendOk(h, s.data(), (int)s.size());
+}
+
+// focus —— 把游戏窗口切到前台。
+//
+// 为什么需要：SendInput 只是往桌面输入队列里塞事件，**只有前台窗口能吃**。
+// 实测 probe29：前台是 Edge 的时候 look 300 让光标从 (62,518) 跑到 (845,518)，
+// 但游戏里一个 float 都没变 —— 事件压根没到游戏。切换前台要用
+// AttachThreadInput 借一下当前前台线程的输入状态，否则 SetForegroundWindow
+// 会被 Windows 的前台锁直接拒掉（返回 0，什么都不做）。
+//
+// 窗按 class 找：OGLES 是这个客户端的主窗口类（overlay 日志里记着
+// hwnd class=OGLES），比按标题匹配稳，标题会随语言和版本变。
+struct FocusCtx {
+    DWORD pid;
+    HWND found;
+};
+
+inline BOOL CALLBACK FocusEnumProc(HWND w, LPARAM lp) {
+    FocusCtx* c = (FocusCtx*)lp;
+    DWORD pid = 0;
+    GetWindowThreadProcessId(w, &pid);
+    if (pid != c->pid) return TRUE;
+    if (GetWindow(w, GW_OWNER) != nullptr) return TRUE;      // 跳过 owned 窗口
+    if (!IsWindowVisible(w)) return TRUE;
+    char cls[64] = {0};
+    GetClassNameA(w, cls, sizeof(cls) - 1);
+    if (_stricmp(cls, "OGLES") == 0) { c->found = w; return FALSE; }
+    if (c->found == nullptr) c->found = w;                   // 兜底：本进程第一个可见窗口
+    return TRUE;
+}
+
+void CmdFocus(HANDLE h, char** ctx) {
+    (void)ctx;
+    FocusCtx c;
+    c.pid = GetCurrentProcessId();
+    c.found = nullptr;
+    EnumWindows(FocusEnumProc, (LPARAM)&c);
+    if (c.found == nullptr) { SendErr(h, "没找到游戏窗口"); return; }
+
+    if (IsIconic(c.found)) ShowWindow(c.found, SW_RESTORE);
+    const HWND fg = GetForegroundWindow();
+    const DWORD fg_tid = (fg != nullptr) ? GetWindowThreadProcessId(fg, nullptr) : 0;
+    const DWORD my_tid = GetCurrentThreadId();
+    bool attached = false;
+    if (fg_tid != 0 && fg_tid != my_tid) {
+        attached = AttachThreadInput(my_tid, fg_tid, TRUE) != 0;
+    }
+    const BOOL ok = SetForegroundWindow(c.found);
+    BringWindowToTop(c.found);
+    SetActiveWindow(c.found);
+    if (attached) AttachThreadInput(my_tid, fg_tid, FALSE);
+
+    Sleep(120);
+    char msg[192];
+    sprintf_s(msg, "focus hwnd=0x%llX setfg=%d now_fg=0x%llX\n",
+              (unsigned long long)c.found, (int)ok,
+              (unsigned long long)GetForegroundWindow());
+    SendOk(h, msg, (int)strlen(msg));
 }
 
 void CmdRead(HANDLE h, char** ctx) {
@@ -763,6 +837,10 @@ bool Serve(HANDLE h) {
             CmdLook(h, &ctx);
         } else if (strcmp(cmd, "actorlist") == 0) {
             CmdActorList(h, &ctx);
+        } else if (strcmp(cmd, "focus") == 0) {
+            CmdFocus(h, &ctx);
+        } else if (strcmp(cmd, "lclick") == 0) {
+            CmdLClick(h, &ctx);
         } else if (strcmp(cmd, "write") == 0) {
             CmdWrite(h, &ctx);
         } else if (strcmp(cmd, "draw") == 0) {
@@ -781,7 +859,7 @@ bool Serve(HANDLE h) {
             CmdUnload(h, &ctx);
             return false;
         } else {
-            SendErr(h, "未知命令（ping/info/actors/scanfov/read/scan/scanactor/scanbench/actorlist/look/who/write/draw/esp/fov/eye/runpy/inject/unload）");
+            SendErr(h, "未知命令（ping/info/actors/scanfov/read/scan/scanactor/scanbench/actorlist/look/focus/lclick/who/write/draw/esp/fov/eye/runpy/inject/unload）");
         }
     }
 }
