@@ -604,6 +604,90 @@ inline bool PlausibleActorPos(const Vec3& v) {
     return true;
 }
 
+// ── RTTI 继承链：判断某个 vtable 是不是 Actor 家族 ────────────────
+//
+// 范围类判据（坐标范围、x!=y!=z、离玩家近）都调到头了，还是排不掉噪声：
+// 距离锚生效之后命中的全是 BlockComponentDescription，坐标是
+// (0,0,30.0) 这种方块尺寸（0.5/1.0/1.5 的倍数），离玩家很近，全部合法。
+//
+// 真正的区分度在**类型**上。MSVC 的 RTTI 里有完整的继承链：
+//   vtable-8      -> RTTICompleteObjectLocator
+//   COL+16        -> RTTIClassHierarchyDescriptor
+//   CHD+8 numBaseClasses, CHD+12 pBaseClassArray
+//   BaseClassArray[i] -> TypeDescriptor, 名字在 +16
+// 第一个是自己，后面是各级基类。链里出现 Actor / Player / Mob / Entity
+// 就是实体。
+inline bool NameHasCI(const char* s, const char* key) {
+    if (s == nullptr || key == nullptr || *key == 0) return false;
+    for (const char* p = s; *p != '\0'; ++p) {
+        const char* a = p;
+        const char* b = key;
+        while (*a != '\0' && *b != '\0') {
+            char ca = *a;
+            char cb = *b;
+            if (ca >= 'A' && ca <= 'Z') ca = (char)(ca - 'A' + 'a');
+            if (cb >= 'A' && cb <= 'Z') cb = (char)(cb - 'A' + 'a');
+            if (ca != cb) break;
+            ++a;
+            ++b;
+        }
+        if (*b == '\0') return true;
+    }
+    return false;
+}
+
+// 按 vtable 缓存结论 —— 512 个候选通常只有几个不同 vtable，
+// 每个都重新走一遍 RTTI 链是白费。
+inline bool IsActorVtable(uintptr_t vt) {
+    struct Slot {
+        uintptr_t vt;
+        bool ok;
+    };
+    static Slot s_cache[64];
+    static int s_used = 0;
+
+    for (int i = 0; i < s_used; ++i) {
+        if (s_cache[i].vt == vt) return s_cache[i].ok;
+    }
+
+    bool ok = false;
+    const uintptr_t base = mem::Base();
+    if (mem::InImage(vt)) {
+        const uintptr_t col = mem::ReadPtr(vt - 8);
+        if (mem::InImage(col)) {
+            uint32_t chd_rva = 0;
+            if (mem::Read(col + 16, &chd_rva) && chd_rva != 0) {
+                const uintptr_t chd = base + chd_rva;
+                uint32_t num = 0;
+                uint32_t arr_rva = 0;
+                if (mem::Read(chd + 8, &num) && mem::Read(chd + 12, &arr_rva) &&
+                    num > 0 && num <= 32 && arr_rva != 0) {
+                    const uintptr_t arr = base + arr_rva;
+                    for (uint32_t i = 0; i < num && !ok; ++i) {
+                        uint32_t td_rva = 0;
+                        if (!mem::Read(arr + (uintptr_t)i * 4, &td_rva) || td_rva == 0) {
+                            continue;
+                        }
+                        char nm[96] = {0};
+                        if (!mem::Read(base + td_rva + 16, nm, sizeof(nm) - 1)) continue;
+                        if (NameHasCI(nm, "Actor") || NameHasCI(nm, "Player") ||
+                            NameHasCI(nm, "Mob") || NameHasCI(nm, "Entity")) {
+                            ok = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (s_used < 64) {
+        s_cache[s_used].vt = vt;
+        s_cache[s_used].ok = ok;
+        ++s_used;
+    }
+    return ok;
+}
+
 // ── 谓词扫堆找 Actor ────────────────────────────────────────────
 //
 // 为什么需要它：这个 build 的 ECS 链（ActorManager -> registry -> storage ->
@@ -616,9 +700,12 @@ inline bool PlausibleActorPos(const Vec3& v) {
 //     不是 EntityStorage，再往下是 EntityContext 的页表，还要再一跳才是 Actor*。
 // 继续猜偏移的代价比直接用扫描结果高得多，所以 ESP 先用这条兜底路径。
 //
-// 判据（两条同时成立，几 GB 堆里只剩几十个命中，全是实体）：
+// 判据（逐层收紧，每一层都是被真机数据逼出来的）：
 //   ① 对象首字是主模块内的指针（vtable）
-//   ② 对象 + kOffPos 处是合理坐标（FiniteVec + PlausiblePos）
+//   ② 对象 + kOffPos 处是合理坐标（PlausibleActorPos）
+//   ③ 离参考点（本地玩家）在 2048 格内
+//   ④ vtable 的 RTTI 继承链里有 Actor / Player / Mob / Entity
+// 只有四条全过才算实体。单独看任何一条都不够 —— 详见每处的注释。
 //
 // 性能：区段内分块读进缓冲后本地筛，不对每个字节位置都走 mem::Read 的
 // VirtualQuery。1.1GB 实测 2~4 秒（之前 ScanHeapQword 是 13 秒）。
@@ -698,6 +785,13 @@ inline int ScanActors(uintptr_t* out, int max_out, size_t* scanned_out = nullptr
                         if (fabsf(p.z - ref->z) > 2048.0f) continue;
                         if (fabsf(p.y - ref->y) > 512.0f) continue;
                     }
+                    // ★ 类型判据（最后一道，也最贵）：RTTI 继承链里必须有
+                    //   Actor / Player / Mob / Entity。范围类判据排不掉
+                    //   BlockComponentDescription（坐标是 (0,0,30.0) 这种方块
+                    //   尺寸，离玩家还近，全部合法），只有继承链能真正区分。
+                    //   放最后是因为坐标/距离判据几乎免费（数据已在缓冲里），
+                    //   而首次遇到一个新 vtable 要读 4~5 次内存。
+                    if (!IsActorVtable(vt)) continue;
                     bool dup = false;
                     for (int k = 0; k < got; ++k) {
                         if (out[k] == obj) { dup = true; break; }
