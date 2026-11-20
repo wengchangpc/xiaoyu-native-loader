@@ -708,7 +708,7 @@ void TickSprintReset() {
         sdk::ActorSetStart();
         const int n = sdk::ActorSetSnapshot(list, 512);
         const uintptr_t lp = sdk::LocalPlayer();
-        bool near = false;
+        bool has_nearby = false;
         sdk::Vec3 me = {0, 0, 0};
         if (lp != 0 && mem::Read(lp + sdk::kOffPos, &me, sizeof(me))) {
             for (int i = 0; i < n; ++i) {
@@ -718,10 +718,10 @@ void TickSprintReset() {
                 const float dx = p.x - me.x;
                 const float dy = p.y - me.y;
                 const float dz = p.z - me.z;
-                if (dx * dx + dy * dy + dz * dz <= need * need) { near = true; break; }
+                if (dx * dx + dy * dy + dz * dz <= need * need) { has_nearby = true; break; }
             }
         }
-        if (!near) return;
+        if (!has_nearby) return;
     }
 
     // 第一次要执行时才读计时参数，并把 cps 冷却排上
@@ -842,6 +842,16 @@ bool AimDelta(const sdk::GameCamera& cam, const sdk::Vec3& tgt,
     return true;
 }
 
+void SendMouseMove(LONG dx, LONG dy) {
+    if (dx == 0 && dy == 0) return;
+    INPUT in = {};
+    in.type = INPUT_MOUSE;
+    in.mi.dx = dx;
+    in.mi.dy = dy;
+    in.mi.dwFlags = MOUSEEVENTF_MOVE;
+    SendInput(1, &in, sizeof(in));
+}
+
 // 把角度差按步长发成鼠标位移。frac 是跨 tick 的亚计数余量 ——
 // 不累积的话每 tick 都因取整丢一点，60Hz 下累积误差肉眼可见。
 void ApplyAimDelta(float d_yaw, float d_pitch, float step_x, float step_y,
@@ -875,16 +885,6 @@ bool GameForeground() {
     DWORD pid = 0;
     GetWindowThreadProcessId(fg, &pid);
     return pid == GetCurrentProcessId();
-}
-
-void SendMouseMove(LONG dx, LONG dy) {
-    if (dx == 0 && dy == 0) return;
-    INPUT in = {};
-    in.type = INPUT_MOUSE;
-    in.mi.dx = dx;
-    in.mi.dy = dy;
-    in.mi.dwFlags = MOUSEEVENTF_MOVE;
-    SendInput(1, &in, sizeof(in));
 }
 
 // 挑目标：aim_range 内、fov 锥内、离相机最近的那个。
