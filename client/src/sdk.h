@@ -644,19 +644,24 @@ inline bool ClassNameIs(const char* nm, const char* key) {
     return *p == '@' || *p == '\0';
 }
 
-// 按 vtable 缓存结论 —— 512 个候选通常只有几个不同 vtable，
-// 每个都重新走一遍 RTTI 链是白费。
+// 按 vtable 缓存结论。
+//
+// ★ 必须是 O(1) 的哈希直接映射，不能是线性表。
+//   实测教训：一开始用 64/96 项线性数组，满了就不再加 —— 而堆里不同
+//   vtable 有几千个，于是后面的候选**每个**都重新走一遍 RTTI 链（6 次读），
+//   1.24GB 扫了 87 秒。改成 (vt>>4)&1023 直接映射之后，同一个 vtable 只
+//   解析一次，重复出现的几十万个同类对象全是命中。
+//   vt 都是 8/16 字节对齐，低 4 位恒为 0，右移 4 位后分布足够均匀。
+//   未初始化的槽 vt==0，而有效 vtable 不可能是 0，所以不需要额外的"空"标记。
 inline bool IsActorVtable(uintptr_t vt) {
     struct Slot {
         uintptr_t vt;
-        bool ok;
+        int8_t ok;
     };
-    static Slot s_cache[96];
-    static int s_used = 0;
+    static Slot s_cache[1024];
 
-    for (int i = 0; i < s_used; ++i) {
-        if (s_cache[i].vt == vt) return s_cache[i].ok;
-    }
+    const size_t idx = (size_t)((vt >> 4) & 1023u);
+    if (s_cache[idx].vt == vt) return s_cache[idx].ok != 0;
 
     bool ok = false;
     const uintptr_t base = mem::Base();
@@ -708,11 +713,8 @@ inline bool IsActorVtable(uintptr_t vt) {
         }
     }
 
-    if (s_used < 64) {
-        s_cache[s_used].vt = vt;
-        s_cache[s_used].ok = ok;
-        ++s_used;
-    }
+    s_cache[idx].vt = vt;
+    s_cache[idx].ok = ok ? 1 : 0;
     return ok;
 }
 
@@ -791,6 +793,12 @@ inline int ScanActors(uintptr_t* out, int max_out, size_t* scanned_out = nullptr
                     uintptr_t vt;
                     memcpy(&vt, buf + i, sizeof(vt));
                     if (vt < base || vt >= img_end) continue;
+                    // ★ 类型判据提前到这里：缓存是 O(1) 直接映射，同一个
+                    //   vtable 只解析一次。堆里几十万个对象首字都是 vtable，
+                    //   但不同 vtable 只有几千个，所以这一步实际几乎全是命中。
+                    //   只有 Actor 家族的才继续往下读坐标，省掉大量无用的
+                    //   跨块读取。
+                    if (!IsActorVtable(vt)) continue;
                     const uintptr_t obj = rbase + off + i;
                     // 坐标字段可能还在这一块缓冲里，直接读；越界才走 mem::Read
                     Vec3 p;
@@ -813,13 +821,6 @@ inline int ScanActors(uintptr_t* out, int max_out, size_t* scanned_out = nullptr
                         if (fabsf(p.z - ref->z) > 2048.0f) continue;
                         if (fabsf(p.y - ref->y) > 512.0f) continue;
                     }
-                    // ★ 类型判据（最后一道，也最贵）：RTTI 继承链里必须有
-                    //   Actor / Player / Mob / Entity。范围类判据排不掉
-                    //   BlockComponentDescription（坐标是 (0,0,30.0) 这种方块
-                    //   尺寸，离玩家还近，全部合法），只有继承链能真正区分。
-                    //   放最后是因为坐标/距离判据几乎免费（数据已在缓冲里），
-                    //   而首次遇到一个新 vtable 要读 4~5 次内存。
-                    if (!IsActorVtable(vt)) continue;
                     bool dup = false;
                     for (int k = 0; k < got; ++k) {
                         if (out[k] == obj) { dup = true; break; }
