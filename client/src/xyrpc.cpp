@@ -282,19 +282,26 @@ void CmdWho(HANDLE h, char** ctx) {
     SendOk(h, s.data(), (int)s.size());
 }
 
-// scanactor [max] —— 谓词扫堆，找所有「像实体」的对象。
+// scanactor [max] [limit_mb] —— 谓词扫堆，找所有「像实体」的对象。
 //
 // 判据是 sdk::ScanActors 里那两条（首字是主模块 vtable + +0xCE0 是合理坐标）。
 // 这是 ECS 链失效时的兜底路径：本 build 上 ActorManager 内部偏移全变了，
 // 沿着 EntityRegistry -> EntityContext 的页表再挖一跳的成本远高于直接扫。
 //
+// limit_mb 是给调优用的：只扫前 N MB 就能拿到「候选数 / RTTI 命中率」这些
+// 比例数据，几十秒就能出结论，不用每次都等全量 1.2GB。
+//
 // 输出一行一个，纯 ASCII，方便脚本 split：
+//   stats bytes=.. cand=.. rtti=.. miss=.. pos=.. ok=.. hit=..
 //   0x<addr> <ClassName> vt_rva=0x<RVA> pos=x,y,z [SELF]
 void CmdScanActors(HANDLE h, char** ctx) {
     int cap = 512;
     if (char* a = NextTok(ctx)) cap = (int)strtol(a, nullptr, 10);
     if (cap < 1) cap = 1;
     if (cap > 1024) cap = 1024;
+    int limit_mb = 0;
+    if (char* a = NextTok(ctx)) limit_mb = (int)strtol(a, nullptr, 10);
+    if (limit_mb < 0) limit_mb = 0;
 
     static uintptr_t objs[1024];
     size_t scanned = 0;
@@ -308,13 +315,22 @@ void CmdScanActors(HANDLE h, char** ctx) {
 
     // 60 秒不够：实测扫到 60 秒被时限截断时只走了 490MB（全量 1.2GB），
     // LocalPlayer 所在的区段还没轮到，结果连自己都没扫到。给 180 秒。
+    sdk::StatsReset();
     const uint64_t t0 = GetTickCount64();
     const int n = sdk::ScanActors(objs, cap, &scanned, t0 + 180000,
-                                  have_ref ? &ref : nullptr);
+                                  have_ref ? &ref : nullptr,
+                                  (size_t)limit_mb << 20);
     const uint64_t ms = GetTickCount64() - t0;
 
     std::string s;
     char line[256];
+    const sdk::ScanStats& st = sdk::Stats();
+    sprintf_s(line, "stats bytes=0x%llX cand=%llu rtti=%llu miss=%llu pos=%llu ok=%llu hit=%llu\n",
+              (unsigned long long)st.bytes,
+              (unsigned long long)st.cand, (unsigned long long)st.rtti,
+              (unsigned long long)st.rtti_miss, (unsigned long long)st.pos_ok,
+              (unsigned long long)st.dist_ok, (unsigned long long)st.hit);
+    s += line;
     sprintf_s(line, "scanned=0x%llX count=%d ms=%llu ref=%s\n",
               (unsigned long long)scanned, n, (unsigned long long)ms,
               have_ref ? "yes" : "no");
@@ -334,6 +350,25 @@ void CmdScanActors(HANDLE h, char** ctx) {
         s += line;
     }
     SendOk(h, s.data(), (int)s.size());
+}
+
+// scanbench [limit_mb] —— 纯复制基准。同样的区段遍历 + memcpy，不做判断。
+// 输出：copy=MB/s bytes=0x.. ms=..
+//
+// 为什么需要它：scanactor 慢的时候只有两种可能，① 读内存本身慢（区段被换出
+// 到页面文件、或驱动层拦截），② 候选太多、判据开销大。两者的优化方向完全
+// 相反，所以先把复制本体的速度量出来。
+void CmdScanBench(HANDLE h, char** ctx) {
+    int limit_mb = 0;
+    if (char* a = NextTok(ctx)) limit_mb = (int)strtol(a, nullptr, 10);
+    if (limit_mb < 0) limit_mb = 0;
+    size_t got = 0;
+    const uint64_t ms = sdk::BenchCopy((size_t)limit_mb << 20, &got);
+    char line[256];
+    const double mbs = (ms == 0) ? 0.0 : ((double)got / 1048576.0) * 1000.0 / (double)ms;
+    sprintf_s(line, "copy=%.1f MB/s bytes=0x%llX ms=%llu\n", mbs,
+              (unsigned long long)got, (unsigned long long)ms);
+    SendOk(h, line, (int)strlen(line));
 }
 
 void CmdRead(HANDLE h, char** ctx) {
@@ -638,6 +673,8 @@ bool Serve(HANDLE h) {
             CmdWho(h, &ctx);
         } else if (strcmp(cmd, "scanactor") == 0) {
             CmdScanActors(h, &ctx);
+        } else if (strcmp(cmd, "scanbench") == 0) {
+            CmdScanBench(h, &ctx);
         } else if (strcmp(cmd, "write") == 0) {
             CmdWrite(h, &ctx);
         } else if (strcmp(cmd, "draw") == 0) {
@@ -656,7 +693,7 @@ bool Serve(HANDLE h) {
             CmdUnload(h, &ctx);
             return false;
         } else {
-            SendErr(h, "未知命令（ping/info/actors/scanfov/read/scan/scanactor/who/write/draw/esp/fov/eye/runpy/inject/unload）");
+            SendErr(h, "未知命令（ping/info/actors/scanfov/read/scan/scanactor/scanbench/who/write/draw/esp/fov/eye/runpy/inject/unload）");
         }
     }
 }

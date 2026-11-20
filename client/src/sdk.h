@@ -644,24 +644,62 @@ inline bool ClassNameIs(const char* nm, const char* key) {
     return *p == '@' || *p == '\0';
 }
 
+// 扫描计数器。scanactor 会把它打出来，用来判断"慢在哪一层"——
+// 是复制本身慢（memory bandwidth / 分页），还是候选太多（RTTI 解析不过来）。
+// 只读诊断用，热路径不参与任何判断，加这几个 ++ 的代价可以忽略。
+struct ScanStats {
+    uint64_t bytes;      // 实际读进缓冲的字节数
+    uint64_t cand;       // 首字落在主模块映像内的 qword 数（第一道筛）
+    uint64_t rtti;       // IsActorVtable 调用次数
+    uint64_t rtti_miss;  // 缓存没命中、真走 RTTI 链的次数
+    uint64_t pos_ok;     // 坐标合理性通过
+    uint64_t dist_ok;    // 距离锚通过
+    uint64_t hit;        // 最终计入结果的
+};
+
+inline ScanStats& Stats() {
+    static ScanStats s;
+    return s;
+}
+
+inline void StatsReset() {
+    ScanStats& s = Stats();
+    s.bytes = 0; s.cand = 0; s.rtti = 0; s.rtti_miss = 0;
+    s.pos_ok = 0; s.dist_ok = 0; s.hit = 0;
+}
+
 // 按 vtable 缓存结论。
 //
-// ★ 必须是 O(1) 的哈希直接映射，不能是线性表。
+// ★ 必须是 O(1) 的哈希索引，不能是线性表。
 //   实测教训：一开始用 64/96 项线性数组，满了就不再加 —— 而堆里不同
 //   vtable 有几千个，于是后面的候选**每个**都重新走一遍 RTTI 链（6 次读），
-//   1.24GB 扫了 87 秒。改成 (vt>>4)&1023 直接映射之后，同一个 vtable 只
-//   解析一次，重复出现的几十万个同类对象全是命中。
+//   1.24GB 扫了 87 秒。
+//
+// ★ 直接映射（1024 槽单路）也不够：堆里同时活跃的 vtable 有几千个，
+//   按 (vt>>4) 落进 1024 个槽必然互相顶掉，命中率掉到个位数，于是**每个**
+//   候选都在重解析 —— 实测比线性表还慢（166 秒）。
+//   改成 2048 组 × 4 路组相连：同 (vt>>4)&2047 的 4 个不同 vtable 可以共存，
+//   几千个活跃 vtable 全放下（128KB，L2 装得下），命中率接近 100%。
 //   vt 都是 8/16 字节对齐，低 4 位恒为 0，右移 4 位后分布足够均匀。
-//   未初始化的槽 vt==0，而有效 vtable 不可能是 0，所以不需要额外的"空"标记。
+//   空槽 vt==0，而有效 vtable 不可能是 0，不需要额外的"空"标记。
 inline bool IsActorVtable(uintptr_t vt) {
     struct Slot {
         uintptr_t vt;
         int8_t ok;
     };
-    static Slot s_cache[1024];
+    constexpr size_t kSets = 2048;
+    constexpr int kWays = 4;
+    static Slot s_cache[kSets][kWays];
 
-    const size_t idx = (size_t)((vt >> 4) & 1023u);
-    if (s_cache[idx].vt == vt) return s_cache[idx].ok != 0;
+    ScanStats& st = Stats();
+    ++st.rtti;
+
+    const size_t set = (size_t)((vt >> 4) & (kSets - 1));
+    Slot* ways = s_cache[set];
+    for (int w = 0; w < kWays; ++w) {
+        if (ways[w].vt == vt) return ways[w].ok != 0;
+    }
+    ++st.rtti_miss;
 
     bool ok = false;
     const uintptr_t base = mem::Base();
@@ -713,8 +751,14 @@ inline bool IsActorVtable(uintptr_t vt) {
         }
     }
 
-    s_cache[idx].vt = vt;
-    s_cache[idx].ok = ok ? 1 : 0;
+    // 写回：优先填空槽，满了就覆盖第 0 路（组内 LRU 的成本不值当，
+    // 4 路够用；被覆盖的那个下次重解析一次也就几百纳秒）。
+    int slot = 0;
+    for (int w = 0; w < kWays; ++w) {
+        if (ways[w].vt == 0) { slot = w; break; }
+    }
+    ways[slot].vt = vt;
+    ways[slot].ok = ok ? 1 : 0;
     return ok;
 }
 
@@ -740,11 +784,13 @@ inline bool IsActorVtable(uintptr_t vt) {
 // 性能：区段内分块读进缓冲后本地筛，不对每个字节位置都走 mem::Read 的
 // VirtualQuery。1.1GB 实测 2~4 秒（之前 ScanHeapQword 是 13 秒）。
 inline int ScanActors(uintptr_t* out, int max_out, size_t* scanned_out = nullptr,
-                     uint64_t deadline_ms = 0, const Vec3* ref = nullptr) {
+                     uint64_t deadline_ms = 0, const Vec3* ref = nullptr,
+                     size_t limit_bytes = 0) {
     if (out == nullptr || max_out <= 0) return 0;
     const uintptr_t base = mem::Base();
     const uintptr_t img_end = base + mem::ImageSize();
     if (base == 0) return 0;
+    ScanStats& st = Stats();
 
     const size_t kChunk = 4u << 20;   // 4MB
     static uint8_t* buf = nullptr;
@@ -782,10 +828,12 @@ inline int ScanActors(uintptr_t* out, int max_out, size_t* scanned_out = nullptr
         if (want) {
             for (uintptr_t off = 0; off < rsize && got < max_out; off += kChunk) {
                 if (deadline_ms != 0 && GetTickCount64() > deadline_ms) goto done;
+                if (limit_bytes != 0 && scanned >= limit_bytes) goto done;
                 const size_t left = (size_t)(rsize - off);
                 const size_t n = left < kChunk ? left : kChunk;
                 if (!mem::Read(rbase + off, buf, n)) continue;
                 scanned += n;
+                st.bytes += n;
                 // ★ 内层循环必须也检查 got < max_out。第一版只在外层 while 上
                 //   判断，结果单块缓冲里就能写超几百个 —— 实测 count=3063
                 //   写进了容量 512 的数组，越界把后面的静态变量全毁了。
@@ -793,7 +841,8 @@ inline int ScanActors(uintptr_t* out, int max_out, size_t* scanned_out = nullptr
                     uintptr_t vt;
                     memcpy(&vt, buf + i, sizeof(vt));
                     if (vt < base || vt >= img_end) continue;
-                    // ★ 类型判据提前到这里：缓存是 O(1) 直接映射，同一个
+                    ++st.cand;
+                    // ★ 类型判据提前到这里：缓存是 O(1) 组相连，同一个
                     //   vtable 只解析一次。堆里几十万个对象首字都是 vtable，
                     //   但不同 vtable 只有几千个，所以这一步实际几乎全是命中。
                     //   只有 Actor 家族的才继续往下读坐标，省掉大量无用的
@@ -809,6 +858,7 @@ inline int ScanActors(uintptr_t* out, int max_out, size_t* scanned_out = nullptr
                         continue;
                     }
                     if (!PlausibleActorPos(p)) continue;
+                    ++st.pos_ok;
                     // ★ 距离锚：实体必须离参考点（本地玩家）不远。
                     //   这是整套判据里唯一有真正区分度的一条。实测：
                     //   只靠「vtable + 坐标范围」，扫 772KB 就有 512 个命中，
@@ -826,6 +876,8 @@ inline int ScanActors(uintptr_t* out, int max_out, size_t* scanned_out = nullptr
                         if (out[k] == obj) { dup = true; break; }
                     }
                     if (dup) continue;
+                    ++st.dist_ok;
+                    ++st.hit;
                     out[got++] = obj;
                 }
             }
@@ -837,6 +889,61 @@ inline int ScanActors(uintptr_t* out, int max_out, size_t* scanned_out = nullptr
 done:
     if (scanned_out != nullptr) *scanned_out = scanned;
     return got;
+}
+
+// 纯复制基准：区段遍历 + memcpy 完全一样，但不做任何判断。
+// 用来把「慢在复制」和「慢在候选判断」分开 —— 这两个的优化方向完全相反，
+// 没这个数字就只能靠猜。返回耗时毫秒，读到的字节数写进 got_bytes。
+inline uint64_t BenchCopy(size_t limit_bytes, size_t* got_bytes) {
+    if (got_bytes != nullptr) *got_bytes = 0;
+    const size_t kChunk = 4u << 20;
+    static uint8_t* buf = nullptr;
+    if (buf == nullptr) {
+        buf = (uint8_t*)VirtualAlloc(nullptr, kChunk, MEM_COMMIT | MEM_RESERVE,
+                                     PAGE_READWRITE);
+        if (buf == nullptr) return 0;
+    }
+    size_t scanned = 0;
+    uint64_t sink = 0;
+    const uint64_t t0 = GetTickCount64();
+    uintptr_t cur = 0x10000;
+    const uintptr_t kUserMax = 0x00007FFFFFFEFFFFull;
+    while (cur < kUserMax) {
+        MEMORY_BASIC_INFORMATION mbi;
+        if (VirtualQuery((LPCVOID)cur, &mbi, sizeof(mbi)) == 0) break;
+        const uintptr_t rbase = (uintptr_t)mbi.BaseAddress;
+        const size_t rsize = mbi.RegionSize;
+        if (rsize == 0) break;
+        const uintptr_t rend = rbase + rsize;
+        bool want = false;
+        if (mbi.State == MEM_COMMIT && mbi.Type == MEM_PRIVATE) {
+            const DWORD p = mbi.Protect;
+            if ((p & PAGE_GUARD) == 0 && (p & PAGE_NOACCESS) == 0 &&
+                (p & (PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READWRITE)) != 0) {
+                want = true;
+            }
+        }
+        if (want) {
+            for (uintptr_t off = 0; off < rsize; off += kChunk) {
+                if (limit_bytes != 0 && scanned >= limit_bytes) goto done;
+                const size_t left = (size_t)(rsize - off);
+                const size_t n = left < kChunk ? left : kChunk;
+                if (!mem::Read(rbase + off, buf, n)) continue;
+                scanned += n;
+                // 每 4096 字节摸一次，既阻止编译器省掉 memcpy，也不额外加负担
+                for (size_t i = 0; i < n; i += 4096) {
+                    sink += buf[i];
+                }
+            }
+        }
+        if (rend <= cur) break;
+        cur = rend;
+    }
+done:
+    const uint64_t ms = GetTickCount64() - t0;
+    if (got_bytes != nullptr) *got_bytes = scanned;
+    if (sink == 0xFFFFFFFFull) LogLine("[sdk] bench sink=%llu", (unsigned long long)sink);
+    return ms;
 }
 
 inline DWORD WINAPI LocateThread(LPVOID param) {
