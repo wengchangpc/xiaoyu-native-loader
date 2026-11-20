@@ -1361,7 +1361,11 @@ struct GameCamera {
 
 inline bool ReadGameCamera(uintptr_t ci, GameCamera* c) {
     if (ci == 0 || c == nullptr) return false;
-    float m[9] = {0};
+    // ★ 必须按 4x4 读：这个矩阵是行主序 4x4（每行 4 个 float，第四列是 0/1），
+    //   不是紧凑的 3x3。第一版只读 9 个 float，于是 m[3] 拿到的是第一行末尾
+    //   那个填充 0、m[6] 拿到第二行的 -0.3418，正交性判据算出 0.12 直接判假。
+    //   实测 n0=0.1196 / n1=0.1165 就是错位的指纹（正确的应该都是 1.0）。
+    float m[16] = {0};
     if (!mem::Read(ci + kOffCiViewMatrix, m, sizeof(m))) return false;
     float p00 = 0.0f;
     float p11 = 0.0f;
@@ -1373,16 +1377,17 @@ inline bool ReadGameCamera(uintptr_t ci, GameCamera* c) {
     // 合理性：3x3 近似正交、投影缩放落在正常范围、位置像世界坐标。
     // 任何一条不过就当链路失效返回 false，调用方退回 yaw/pitch 版本，
     // 绝不拿歪矩阵去画 —— 画歪比不画更难判断。
-    const float n0 = m[0] * m[0] + m[3] * m[3] + m[6] * m[6];
-    const float n1 = m[1] * m[1] + m[4] * m[4] + m[7] * m[7];
+    // 列 = 相机的三个轴（行主序 4x4 里第 r 行第 c 列是 m[r*4+c]）
+    const float n0 = m[0] * m[0] + m[4] * m[4] + m[8] * m[8];
+    const float n1 = m[1] * m[1] + m[5] * m[5] + m[9] * m[9];
     if (n0 < 0.9f || n0 > 1.1f || n1 < 0.9f || n1 > 1.1f) return false;
     if (p00 < 0.05f || p00 > 20.0f || p11 < 0.05f || p11 > 20.0f) return false;
     if (!PlausiblePos(cam)) return false;
 
     c->eye = cam;
-    c->rx = m[0]; c->ry = m[3]; c->rz = m[6];
-    c->ux = m[1]; c->uy = m[4]; c->uz = m[7];
-    c->fx = -m[2]; c->fy = -m[5]; c->fz = -m[8];
+    c->rx = m[0]; c->ry = m[4]; c->rz = m[8];
+    c->ux = m[1]; c->uy = m[5]; c->uz = m[9];
+    c->fx = -m[2]; c->fy = -m[6]; c->fz = -m[10];
     c->p00 = p00;
     c->p11 = p11;
     c->focal = 0.0f;    // 由调用方按 h 算：(h*0.5)*p11
