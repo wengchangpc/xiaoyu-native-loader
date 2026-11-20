@@ -287,6 +287,7 @@
 
 #include <windows.h>
 
+#include <cmath>
 #include <cstdint>
 
 #include "log.h"
@@ -520,6 +521,30 @@ inline DWORD WINAPI LocateThread(LPVOID param) {
                     (unsigned long long)rva, (unsigned long long)obj,
                     (unsigned long long)(GetTickCount64() - t0),
                     (unsigned long long)st.scanned_mb);
+
+            // 对象有了，但坐标在哪个偏移还是未知（kOffPos 是上一个 build 的）。
+            // 顺手把候选打出来，和游戏里 F3 的坐标一对就能定死。
+            PosGuess g[16];
+            const int ng = FindPosCandidates(obj, g, 16);
+            LogLine("[sdk] 坐标候选 %d 个（对照游戏 F3 的坐标挑一个）：", ng);
+            for (int i = 0; i < ng; ++i) {
+                LogLine("[sdk]   #%d off=0x%llX stride=0x%llX "
+                        "pos=(%.3f,%.3f,%.3f) prev=(%.3f,%.3f,%.3f) gap=%.3f",
+                        i, (unsigned long long)g[i].off,
+                        (unsigned long long)g[i].stride, g[i].cur.x, g[i].cur.y,
+                        g[i].cur.z, g[i].prev.x, g[i].prev.y, g[i].prev.z,
+                        g[i].gap);
+            }
+            // 硬编码的 kOffPos 也验一下：读出来合理就打个 OK
+            Vec3 hard;
+            if (mem::Read(obj + kOffPos, &hard, sizeof(hard)) && PlausiblePos(hard)) {
+                LogLine("[sdk] 硬编码 kOffPos=0x%llX 读出来是 (%.3f,%.3f,%.3f)，"
+                        "看起来仍然有效", (unsigned long long)kOffPos,
+                        hard.x, hard.y, hard.z);
+            } else {
+                LogLine("[sdk] 硬编码 kOffPos=0x%llX 不可用，按上面的候选改",
+                        (unsigned long long)kOffPos);
+            }
             return 0;
         }
     }
@@ -597,6 +622,78 @@ inline uintptr_t LocalPlayer() {
 inline bool LocalPlayerPos(uintptr_t lp, Vec3* out) {
     if (lp == 0 || out == nullptr) return false;
     return mem::Read(lp + kOffPos, out, sizeof(Vec3));
+}
+
+// ── 成员偏移自动发现：坐标 ──────────────────────────────────────
+//
+// 找到 LocalPlayer 对象只解决了一半问题 —— 坐标在对象里哪个偏移，每个
+// build 都会变（当前 kOffPos=0xCE0 是上一个 build 的值）。
+// 但 mPos（眼睛）和 mPosPrev（上一 tick 位置）有三个很强的特征：
+//
+//   1) 是两个 Vec3，紧挨着放（stride 0xC 或 0x10，末尾会 padding）
+//   2) 两者距离极小 —— 一 tick 内玩家移动不超过 2 格
+//   3) y 落在 -100..400（世界高度），x/z 绝对值远小于 3e7
+//
+// 速度向量 (vx,vy,vz) 也满足 3)，但它旁边不会有第二个"几乎一样的自己"，
+// 所以条件 2) 就是用来把它排除掉的。
+//
+// 扫出来的是候选列表，不是唯一解 —— 相机偏移、投掷物起点也会长得像。
+// 所以结果会全打进日志，配合"日志里的坐标 vs 游戏 F3 里看到的坐标"
+// 一次就能确定哪个是对的。
+struct PosGuess {
+    uintptr_t off;
+    uintptr_t stride;
+    Vec3 cur;
+    Vec3 prev;
+    float gap;      // 与 prev 的距离，越小越像
+};
+
+inline bool FiniteVec(const Vec3& v) {
+    // NaN 会让后面所有比较都变成 false，必须先显式排掉
+    return v.x == v.x && v.y == v.y && v.z == v.z &&
+           v.x > -1e30f && v.x < 1e30f &&
+           v.y > -1e30f && v.y < 1e30f &&
+           v.z > -1e30f && v.z < 1e30f;
+}
+
+inline bool PlausiblePos(const Vec3& v) {
+    if (!FiniteVec(v)) return false;
+    if (v.x < -3.0e7f || v.x > 3.0e7f) return false;
+    if (v.z < -3.0e7f || v.z > 3.0e7f) return false;
+    if (v.y < -100.0f || v.y > 400.0f) return false;
+    // 全 0 更像未初始化的空槽，不是真实坐标
+    if (v.x == 0.0f && v.y == 0.0f && v.z == 0.0f) return false;
+    return true;
+}
+
+// 试探步长：Vec3 是 12 字节，但编译器可能把它对齐到 16。
+inline int FindPosCandidates(uintptr_t obj, PosGuess* out, int max_out,
+                            uintptr_t span = 0x2000) {
+    if (obj == 0 || out == nullptr || max_out <= 0) return 0;
+    static const uintptr_t kStride[2] = {0x0C, 0x10};
+    int n = 0;
+    for (uintptr_t off = 0; off + 0x20 < span && n < max_out; off += 4) {
+        Vec3 a;
+        if (!mem::Read(obj + off, &a, sizeof(a))) break;
+        if (!PlausiblePos(a)) continue;
+        for (int k = 0; k < 2 && n < max_out; ++k) {
+            Vec3 b;
+            if (!mem::Read(obj + off + kStride[k], &b, sizeof(b))) continue;
+            if (!PlausiblePos(b)) continue;
+            const float dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
+            const float gap = sqrtf(dx * dx + dy * dy + dz * dz);
+            // 完全相等说明是同一个值的两份拷贝（比如 UI 缓存），不是 pos/prev
+            if (gap <= 0.0f || gap > 2.0f) continue;
+            out[n].off = off;
+            out[n].stride = kStride[k];
+            out[n].cur = a;
+            out[n].prev = b;
+            out[n].gap = gap;
+            ++n;
+            break;      // 同一个 off 不用两种 stride 都记
+        }
+    }
+    return n;
 }
 
 inline uintptr_t BlockSourceOf(uintptr_t lp) {
