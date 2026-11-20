@@ -304,49 +304,18 @@ void ToggleGameCursorRelease(const char* why, bool verify) {
     g_unlock_check_at = GetTickCount64() + 400;
 }
 
-// 面板打开期间把光标"软"限制在游戏客户区里。
+// 面板打开期间**不**对光标做任何位置限制。
 //
-// ★ 这里以前用 ClipCursor，已经彻底弃用。原因是 ClipCursor 属于
-//   **桌面级共享状态**，不是我们一个窗口的事：一旦残留，用户切到浏览器、
-//   聊天窗口时鼠标整个被困在游戏那块矩形里，手感就是"鼠标一卡一卡"；
-//   而且它和游戏自己每帧的裁剪会互相打架，"是否已解锁"的检测永远不可信。
+// 历史：这里先后试过两种钳制，都删了。
+//   1) ClipCursor —— 桌面级共享状态，切到别的程序鼠标还被关在游戏矩形里，
+//      而且和游戏自己每帧的裁剪互相打架，"是否已解锁"永远检测不准。
+//   2) 每帧软钳（GetCursorPos 越界就 SetCursorPos 拉回来）—— 副作用是小但
+//      真实存在的：处理 UI 时轻微一顿一顿，多显示器下想移到副屏直接被拽回。
+//      面板本来就该能拖到屏幕任何地方，把指针焊在游戏客户区里反而是 bug。
 //
-//   改成每帧软钳：光标跑出客户区就 SetCursorPos 拉回来。只在我们自己
-//   占着前台、且面板开着的时候动手，窗口一失焦立刻什么都不做 ——
-//   不存在需要"清理"的残留状态，因为根本没有设置任何全局状态。
-//
-//   这一版固定用系统光标（不自绘），所以钳位就是保证指针不会跑出游戏窗口
-//   之后"看不见也点不到"的唯一手段。
-void KeepCursorInside(bool want) {
-    if (!want) return;
-    if (g_game == nullptr || !IsWindow(g_game)) return;
-    if (GetForegroundWindow() != g_game) return;
+// 结论：光标位置完全交给 Windows 和用户自己。窗口在整个显示器上铺满，
+// 指针跑到哪都在我们的窗口里，不需要任何钳制。
 
-    RECT cr = {};
-    if (!GetClientRect(g_game, &cr)) return;
-    POINT tl = {0, 0};
-    if (!ClientToScreen(g_game, &tl)) return;
-
-    const int w = (int)(cr.right - cr.left);
-    const int h = (int)(cr.bottom - cr.top);
-    if (w < 16 || h < 16) return;
-
-    // 留 1px 余量，免得正好压在边框上被判成"在外面"来回弹
-    const int l = tl.x + 1;
-    const int t = tl.y + 1;
-    const int r = tl.x + w - 2;
-    const int b = tl.y + h - 2;
-
-    POINT p;
-    if (!GetCursorPos(&p)) return;
-    if (p.x >= l && p.x <= r && p.y >= t && p.y <= b) return;
-
-    if (p.x < l) p.x = l;
-    if (p.x > r) p.x = r;
-    if (p.y < t) p.y = t;
-    if (p.y > b) p.y = b;
-    SetCursorPos(p.x, p.y);
-}
 
 // 面板打开期间让**系统光标**保持可见（用户要求只用真实光标，不自绘）。
 //
@@ -713,10 +682,7 @@ int OverlayMain() {
 
         FollowGameWindow();
 
-        // 光标的唯一决策点：每轮都跑，条件不满足就什么都不做。
-        // 绝对不要挪进下面 if (g_visible) 里面 —— 游戏一进后台那个分支
-        // 就不执行了，桌面光标会一直被困在游戏窗口里出不来。
-        KeepCursorInside(g_visible && gui::WantsMouse());
+        // 光标位置不钳制：面板可以拖到屏幕任何位置，指针也该能跟过去。
         // 系统光标：面板或 HUD 布局模式开着才需要它可见，
         // 其余情况把显示计数还回去
         SetSystemCursor(g_visible && gui::WantsMouse());

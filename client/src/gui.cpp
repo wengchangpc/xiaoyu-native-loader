@@ -1082,10 +1082,14 @@ void DrawFeatureRow(int fi, const Panel& p, float row_x, float& row_y, bool inte
             } else {
                 cfg::SetModuleOn(fi, !on);
             }
+            // ★ 必须抢掉这次按下。以前这里没置位，一次点击会继续往下
+            //   传给后面的面板/控件：两个面板一重叠，点一下会同时切两个模块，
+            //   或者切完开关接着又被滚动条吃掉。
+            g_click_used = true;
         }
         // 右键点模块行 = 把这个模块的所有参数和快捷键恢复出厂。
         // 调参数调到不知道动了哪个的时候，比逐个滑块往回拖快得多。
-        if (input::Pressed(1) && inside && g_drag_panel < 0) {
+        if (input::Pressed(1) && !g_click_used && inside && g_drag_panel < 0) {
             const FeatureInfo& f = kFeatures[fi];
             for (int k = 0; k < f.paramCount; ++k) cfg::ClearParam(f.paramFirst + k);
             cfg::SetModuleBind(fi, 0);
@@ -1094,6 +1098,7 @@ void DrawFeatureRow(int fi, const Panel& p, float row_x, float& row_y, bool inte
             swprintf_s(msg, L"%ls \u00B7 \u5DF2\u6062\u590D\u51FA\u5382", FeatName(fi));
             PushToast(msg);
             LogLine("[gui] reset feature %ls", f.en);
+            g_click_used = true;
         }
     }
 
@@ -1122,7 +1127,13 @@ void DrawPanel(Panel& p, bool interactive) {
     const bool body_inside = mx >= p.x && mx <= p.x + p.w && my >= p.y + headH &&
                              my <= p.y + p.h;
 
-    if (!interactive) {
+    // ★ 这里曾经写成 if (!interactive) 画 chrome —— 和 DrawFeatureRow 的语义正好相反。
+    //   DrawFeatureRow / DrawParamRow 是 interactive=true 时"画"、false 时"处理点击"，
+    //   于是两轮遍历变成：第一轮画出所有行视觉（但没有面板底色），
+    //   第二轮才铺底色 —— 铺底把第一轮画的东西整块盖掉，面板就只剩底色和标题。
+    //   现在统一成：interactive=true 这一轮 = 画（先铺 chrome 再画行），
+    //   interactive=false 这一轮 = 纯输入处理，一个像素都不画。
+    if (interactive) {
         DrawPanelChrome(p, head_inside || g_drag_panel == p.group);
     } else {
         // 栏头：按下开始拖，松开若没怎么动就当作折叠
@@ -1227,7 +1238,7 @@ void DrawPanel(Panel& p, bool interactive) {
     float view_h = body_h - 6.0f * s;
     if (view_h < 0.0f) view_h = 0.0f;
 
-    if (!interactive) {
+    if (interactive) {
         BarGeom bar = ScrollbarGeom(p);
         bool hot = bar.valid && mx >= bar.bx - 3.0f * s && mx <= bar.bx + bar.bw + 3.0f * s &&
                    my >= bar.by && my <= bar.by + bar.bh;
@@ -1242,7 +1253,7 @@ void DrawPanel(Panel& p, bool interactive) {
         DrawFeatureRow(i, p, p.x + kInset * s, row_y, interactive);
     }
 
-    if (!interactive) render::PopClip();
+    if (interactive) render::PopClip();
 }
 
 // ── HUD ─────────────────────────────────────────────────────────
@@ -1999,7 +2010,11 @@ void OnFrame() {
         for (size_t i = 0; i < g_panels.size(); ++i) {
             DrawPanel(g_panels[i], true);
         }
-        for (size_t i = 0; i < g_panels.size(); ++i) {
+        // ★ 输入轮要**倒序**：绘制是正序，index 大的后画 = 视觉上在上面，
+        //   所以点击也必须让 index 大的先抢。以前两轮都正序，重叠区域上
+        //   被压在底下的面板先响应，点了上面那块结果动的是下面那个。
+        //   这一轮现在不画任何像素，倒序不会影响 z 序。
+        for (size_t i = g_panels.size(); i-- > 0;) {
             DrawPanel(g_panels[i], false);
         }
         // 工具条最后画，保证压在面板上面
