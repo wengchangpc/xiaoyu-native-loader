@@ -317,6 +317,15 @@ constexpr uintptr_t kItemStack      = 0x8FD9F38;
 constexpr uintptr_t kItemActor      = 0x8FD0BA8;
 }  // namespace vt
 
+// 代码段结束的 RVA。用来把「落在代码段里的命中」和「数据段里的全局变量」分开：
+// 反查「谁持有某个对象」时，代码段里的命中都是 `mov reg, imm64` 之类的立即数，
+// 真正的全局变量一定在 .text 之后。
+//
+// 本 build 节表：.text va=0x1000 vsize=0x88E1F67 → 下一节从 0x88E3000 开始。
+// 这个值只用于粗筛，不要求精确 —— 猜小了大不了多留几个候选，猜大了会把
+// 真正的全局漏掉，所以宁可取小一点。
+constexpr uintptr_t kCodeEndRva = 0x88E3000;
+
 // ── LocalPlayer / Actor 字段 ────────────────────────────────────
 constexpr uintptr_t kOffPos = 0x0CE0;
 constexpr uintptr_t kOffPosPrev = 0x0CEC;
@@ -354,6 +363,89 @@ struct Vec3 {
     float z;
 };
 
+// 判断一个地址像不像某个 SDK 类的实例：首 8 字节必须是主模块内的 vftable。
+// 这一步是整个自动定位的地基 —— vftable 指针有三个好性质：
+//   1) 值一定落在主模块映像里（mem::InImage 能挡住绝大多数垃圾）
+//   2) 值一定 8 字节对齐，而且指向的地址本身是代码
+//   3) 同一个类只有一个主 vftable，所以「首字等于 base+vtRVA」的对象基本唯一
+inline bool LooksLikeObject(uintptr_t p) {
+    if (p == 0 || (p & 7) != 0) return false;
+    const uintptr_t vt = mem::ReadPtr(p);
+    return vt != 0 && mem::InImage(vt);
+}
+
+// 对象首字是否正好是某个已知 vftable
+inline bool HasVtable(uintptr_t p, uintptr_t vt_rva) {
+    if (p == 0) return false;
+    const uintptr_t vt = mem::ReadPtr(p);
+    return vt == mem::Base() + vt_rva;
+}
+
+// ── 全局槽位自动定位 ────────────────────────────────────────────
+//
+// 硬编码的 kLocalPlayerGlobalRva 只对某一个 build 成立。这个客户端每次
+// 更新都会把它整体挪走（实测上一个 build 的整批 vftable 都差 0x1000，
+// 而全局偏移差得更多），一旦失配，LocalPlayer() 读出来的是**已释放的堆
+// 内存** —— 首字是 0，整条 ESP 链路静默失效，还查不出原因。
+//
+// 所以这里做一次运行期反查，两跳：
+//   ① 堆里找「首 8 字节 == base + vt::kLocalPlayer」的对象 → 真身地址
+//   ② 主模块映像里找「值 == 这个地址」的位置 → 就是持有它的全局变量
+// 两跳都不依赖任何预先知道的偏移，只有 vftable RVA 来自符号表（可靠）。
+//
+// 只在硬编码偏移失效时才跑，结果缓存在 g_lp_global_rva 里。堆扫描要几秒，
+// 绝不能每帧做。
+struct LpLocate {
+    uintptr_t global_rva = 0;   // 反查出来的全局槽位 RVA（0 = 还没找到）
+    uintptr_t cached_lp = 0;    // 上次读到的对象地址
+    bool tried = false;         // 已经扫过了（失败也不重复扫）
+    bool ok = false;
+};
+
+inline LpLocate& LpState() {
+    static LpLocate s;
+    return s;
+}
+
+// 在堆里找 LocalPlayer 真身。命中可能有多个（被别处缓存的同一对象），
+// 逐个验证：必须是 LocalPlayer vtable，且能从它走到 BlockSource 候选。
+inline uintptr_t FindLocalPlayerObject() {
+    const uint64_t needle = (uint64_t)(mem::Base() + vt::kLocalPlayer);
+    mem::HeapHit hits[16];
+    size_t scanned = 0;
+    const int n = mem::ScanHeapQword(&needle, 1, hits, 16, &scanned);
+    LogLine("[sdk] 扫堆找 LocalPlayer：扫了 %.1f MB，命中 %d 个",
+            (double)scanned / (1024.0 * 1024.0), n);
+    for (int i = 0; i < n; ++i) {
+        const uintptr_t p = hits[i].addr;
+        LogLine("[sdk]   候选 #%d = 0x%llX", i, (unsigned long long)p);
+        if (HasVtable(p, vt::kLocalPlayer)) return p;
+    }
+    return 0;
+}
+
+// 反查谁持有这个对象。返回全局槽位的 RVA（相对主模块基址）。
+inline uintptr_t FindGlobalHolding(uintptr_t obj) {
+    uintptr_t hits[64];
+    const int n = mem::FindAllQword((uint64_t)obj, hits, 64, 0, 0);
+    const uintptr_t base = mem::Base();
+    LogLine("[sdk] 反查持有 0x%llX 的槽位：%d 处", (unsigned long long)obj, n);
+    for (int i = 0; i < n; ++i) {
+        const uintptr_t rva = hits[i] - base;
+        LogLine("[sdk]   rva=0x%llX", (unsigned long long)rva);
+    }
+    // 全局变量在数据段：优先取 RVA 最大的那批（.data 在 .text 后面）。
+    // 排除掉落在代码段里的命中（那些是指令立即数，不是变量）。
+    uintptr_t best = 0;
+    for (int i = 0; i < n; ++i) {
+        const uintptr_t rva = hits[i] - base;
+        if (rva < kCodeEndRva) continue;         // 代码段里的不是全局
+        if (rva > best) best = rva;
+    }
+    if (best == 0 && n > 0) best = hits[0] - base;
+    return best;
+}
+
 // 拿当前 LocalPlayer。读不到（还在标题界面 / 全局还没写）返回 0。
 //
 // ★ 这里必须兜底调一次 mem::Init()。以前只有 probe / explorer 会调它，
@@ -366,7 +458,58 @@ inline uintptr_t LocalPlayer() {
         base = mem::Base();
     }
     if (base == 0) return 0;
-    return mem::ReadPtr(base + kLocalPlayerGlobalRva);
+
+    LpLocate& st = LpState();
+
+    // 已经反查出正确的全局槽位：直接用它
+    if (st.ok) {
+        const uintptr_t p = mem::ReadPtr(base + st.global_rva);
+        if (HasVtable(p, vt::kLocalPlayer) || HasVtable(p, vt::kPlayer)) {
+            st.cached_lp = p;
+            return p;
+        }
+        // 对象换了（重生 / 换世界）：槽位还对，只是里面的指针变了
+        const uintptr_t np = mem::ReadPtr(base + st.global_rva);
+        if (np != 0 && LooksLikeObject(np)) {
+            st.cached_lp = np;
+            return np;
+        }
+        // 槽位也失效了，重新反查
+        st.ok = false;
+    }
+
+    // 先试硬编码偏移
+    const uintptr_t raw = mem::ReadPtr(base + kLocalPlayerGlobalRva);
+    if (HasVtable(raw, vt::kLocalPlayer) || HasVtable(raw, vt::kPlayer)) {
+        st.cached_lp = raw;
+        return raw;
+    }
+
+    // 硬编码失效：跑一次自动定位（整个进程生命周期只跑一次）
+    if (!st.tried) {
+        st.tried = true;
+        LogLine("[sdk] 硬编码全局 0x%llX 失效（值=0x%llX，首字=0x%llX），"
+                "开始自动定位",
+                (unsigned long long)kLocalPlayerGlobalRva, (unsigned long long)raw,
+                (unsigned long long)mem::ReadPtr(raw));
+        const uintptr_t obj = FindLocalPlayerObject();
+        if (obj != 0) {
+            const uintptr_t rva = FindGlobalHolding(obj);
+            if (rva != 0) {
+                st.global_rva = rva;
+                st.ok = true;
+                st.cached_lp = obj;
+                LogLine("[sdk] 定位成功：LocalPlayer 全局 RVA = 0x%llX，对象 = 0x%llX"
+                        "（把 kLocalPlayerGlobalRva 改成这个值可以省掉每次扫描）",
+                        (unsigned long long)rva, (unsigned long long)obj);
+                return obj;
+            }
+        }
+        LogLine("[sdk] 自动定位失败：%s",
+                obj == 0 ? "堆里没找到带 LocalPlayer vtable 的对象"
+                         : "找到了对象但反查不到全局槽位");
+    }
+    return 0;
 }
 
 inline bool LocalPlayerPos(uintptr_t lp, Vec3* out) {
