@@ -584,6 +584,26 @@ inline int FindPosCandidates(uintptr_t obj, PosGuess* out, int max_out,
     return n;
 }
 
+// 实体的坐标判据，比 PlausiblePos 严一档。
+//
+// PlausiblePos 是给「扫候选偏移」用的，只要在合理范围内就算，所以像
+// (0.1, 0.1, 0.1) 这种别的字段的值也能过。实测第一版扫描 772KB 就命中了
+// 3063 个（BlockComponentDescription 占一半），密度说明判据没区分度。
+//
+// 再加三条：
+//   ① 三个分量不能完全相等 —— 真实坐标几乎不可能 x==y==z（原点除外，
+//      但原点又被下一条排掉）
+//   ② y 收窄到基岩版世界高度 -70..330（PlausiblePos 用的是 -100..400）
+//   ③ |x| 和 |z| 不能都小于 1 —— 排除 ±0.1 这类噪声；代价是世界原点附近
+//      的实体会漏画，实际极少
+inline bool PlausibleActorPos(const Vec3& v) {
+    if (!PlausiblePos(v)) return false;
+    if (v.x == v.y && v.y == v.z) return false;
+    if (v.y < -70.0f || v.y > 330.0f) return false;
+    if (fabsf(v.x) < 1.0f && fabsf(v.z) < 1.0f) return false;
+    return true;
+}
+
 // ── 谓词扫堆找 Actor ────────────────────────────────────────────
 //
 // 为什么需要它：这个 build 的 ECS 链（ActorManager -> registry -> storage ->
@@ -649,7 +669,10 @@ inline int ScanActors(uintptr_t* out, int max_out, size_t* scanned_out = nullptr
                 const size_t n = left < kChunk ? left : kChunk;
                 if (!mem::Read(rbase + off, buf, n)) continue;
                 scanned += n;
-                for (size_t i = 0; i + 8 <= n; i += 8) {
+                // ★ 内层循环必须也检查 got < max_out。第一版只在外层 while 上
+                //   判断，结果单块缓冲里就能写超几百个 —— 实测 count=3063
+                //   写进了容量 512 的数组，越界把后面的静态变量全毁了。
+                for (size_t i = 0; i + 8 <= n && got < max_out; i += 8) {
                     uintptr_t vt;
                     memcpy(&vt, buf + i, sizeof(vt));
                     if (vt < base || vt >= img_end) continue;
@@ -662,7 +685,7 @@ inline int ScanActors(uintptr_t* out, int max_out, size_t* scanned_out = nullptr
                     } else if (!mem::Read(obj + kOffPos, &p, sizeof(p))) {
                         continue;
                     }
-                    if (!PlausiblePos(p)) continue;
+                    if (!PlausibleActorPos(p)) continue;
                     bool dup = false;
                     for (int k = 0; k < got; ++k) {
                         if (out[k] == obj) { dup = true; break; }
