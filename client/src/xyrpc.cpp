@@ -400,6 +400,61 @@ void CmdLook(HANDLE h, char** ctx) {
     SendOk(h, msg, (int)strlen(msg));
 }
 
+// actorlist [wait_ms] —— 后台扫描器的快照，和 scanactor 的区别：
+//   scanactor : 同步扫一次（几十秒），用来调判据
+//   actorlist : 读后台线程已经扫好的列表（微秒级），位置每帧现读
+// ESP 用的就是后者。wait_ms 是等后台线程出第一份结果的耐心，
+// 默认 3000ms —— 第一次全量扫要几十秒，等不到就先返回空，别把调用方拖死。
+void CmdActorList(HANDLE h, char** ctx) {
+    int wait_ms = 3000;
+    if (char* a = NextTok(ctx)) wait_ms = (int)strtol(a, nullptr, 10);
+    if (wait_ms < 0) wait_ms = 0;
+    if (wait_ms > 200000) wait_ms = 200000;
+
+    sdk::ActorSetStart();
+    const uint64_t t0 = GetTickCount64();
+    uintptr_t list[512];
+    int n = 0;
+    for (;;) {
+        n = sdk::ActorSetSnapshot(list, 512);
+        if (n > 0) break;
+        if ((int)(GetTickCount64() - t0) >= wait_ms) break;
+        Sleep(200);
+    }
+
+    const uintptr_t lp = sdk::LocalPlayer();
+    sdk::Vec3 ref;
+    const bool have_ref = (lp != 0) && mem::Read(lp + sdk::kOffPos, &ref, sizeof(ref));
+
+    std::string s;
+    char line[256];
+    const sdk::ActorSetState& ast = sdk::ActorSetData();
+    sprintf_s(line, "count=%d waited=%llums lastcost=%llums lastmb=%ld learned=%d\n",
+              n, (unsigned long long)(GetTickCount64() - t0),
+              (unsigned long long)ast.last_scan_cost_ms, ast.last_scanned_mb,
+              sdk::LearnedCount());
+    s += line;
+
+    const uintptr_t base = mem::Base();
+    for (int i = 0; i < n; ++i) {
+        sdk::Vec3 p;
+        if (!mem::Read(list[i] + sdk::kOffPos, &p, sizeof(p))) continue;
+        const uintptr_t vt = mem::ReadPtr(list[i]);
+        const char* cls = sdk::ClassNameOf(list[i]);
+        float d = -1.0f;
+        if (have_ref) {
+            const float dx = p.x - ref.x, dy = p.y - ref.y, dz = p.z - ref.z;
+            d = sqrtf(dx * dx + dy * dy + dz * dz);
+        }
+        sprintf_s(line, "0x%llX %s vt_rva=0x%llX pos=%.2f,%.2f,%.2f d=%.1f%s\n",
+                  (unsigned long long)list[i], cls != nullptr ? cls : "?",
+                  (unsigned long long)(vt - base), p.x, p.y, p.z, d,
+                  list[i] == lp ? " SELF" : "");
+        s += line;
+    }
+    SendOk(h, s.data(), (int)s.size());
+}
+
 void CmdRead(HANDLE h, char** ctx) {
     char* a = NextTok(ctx);
     char* b = NextTok(ctx);
@@ -706,6 +761,8 @@ bool Serve(HANDLE h) {
             CmdScanBench(h, &ctx);
         } else if (strcmp(cmd, "look") == 0) {
             CmdLook(h, &ctx);
+        } else if (strcmp(cmd, "actorlist") == 0) {
+            CmdActorList(h, &ctx);
         } else if (strcmp(cmd, "write") == 0) {
             CmdWrite(h, &ctx);
         } else if (strcmp(cmd, "draw") == 0) {
@@ -724,7 +781,7 @@ bool Serve(HANDLE h) {
             CmdUnload(h, &ctx);
             return false;
         } else {
-            SendErr(h, "未知命令（ping/info/actors/scanfov/read/scan/scanactor/scanbench/look/who/write/draw/esp/fov/eye/runpy/inject/unload）");
+            SendErr(h, "未知命令（ping/info/actors/scanfov/read/scan/scanactor/scanbench/actorlist/look/who/write/draw/esp/fov/eye/runpy/inject/unload）");
         }
     }
 }

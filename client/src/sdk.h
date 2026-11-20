@@ -783,9 +783,57 @@ inline bool IsActorVtable(uintptr_t vt) {
 //
 // 性能：区段内分块读进缓冲后本地筛，不对每个字节位置都走 mem::Read 的
 // VirtualQuery。1.1GB 实测 2~4 秒（之前 ScanHeapQword 是 13 秒）。
+// ── 学到的区段 ────────────────────────────────────────────────────
+//
+// 为什么必须学：全量扫一次堆要读 1.24GB，而这台机器物理内存只剩 0.2GB
+// （实测 load=97%，8GB 总量），游戏那 1.24GB 私有堆大部分躺在页面文件里。
+// 纯 memcpy 基准只有 35~112 MB/s，全量扫一次 30~160 秒 —— 而且扫完会把
+// 游戏自己的热页挤出去。命中之后把「命中所在的区段」记下来，下次只扫这些
+// 区段（几十 MB 级），快两个数量级；新实体长在没学到的区段里就靠定期
+// 全量补扫兜住（见 ActorSetTick 的 full_interval）。
+struct ScanRegion {
+    uintptr_t base;
+    size_t size;
+};
+
+inline int& LearnedCountRef() {
+    static int n = 0;
+    return n;
+}
+
+inline ScanRegion* LearnedRegions() {
+    static ScanRegion r[48];
+    return r;
+}
+
+inline int LearnedCount() { return LearnedCountRef(); }
+
+// 对每个命中做 VirtualQuery 取所在区段，去重后记下。
+inline void LearnRegionsFrom(const uintptr_t* objs, int n) {
+    if (objs == nullptr || n <= 0) return;
+    ScanRegion* regs = LearnedRegions();
+    int& cnt = LearnedCountRef();
+    for (int i = 0; i < n; ++i) {
+        MEMORY_BASIC_INFORMATION mbi;
+        if (VirtualQuery((LPCVOID)objs[i], &mbi, sizeof(mbi)) == 0) continue;
+        const uintptr_t b = (uintptr_t)mbi.BaseAddress;
+        const size_t sz = mbi.RegionSize;
+        if (sz == 0) continue;
+        bool dup = false;
+        for (int k = 0; k < cnt; ++k) {
+            if (regs[k].base == b) { dup = true; break; }
+        }
+        if (dup) continue;
+        if (cnt >= 48) break;
+        regs[cnt].base = b;
+        regs[cnt].size = sz;
+        ++cnt;
+    }
+}
+
 inline int ScanActors(uintptr_t* out, int max_out, size_t* scanned_out = nullptr,
                      uint64_t deadline_ms = 0, const Vec3* ref = nullptr,
-                     size_t limit_bytes = 0) {
+                     size_t limit_bytes = 0, bool use_learned = true) {
     if (out == nullptr || max_out <= 0) return 0;
     const uintptr_t base = mem::Base();
     const uintptr_t img_end = base + mem::ImageSize();
@@ -802,13 +850,94 @@ inline int ScanActors(uintptr_t* out, int max_out, size_t* scanned_out = nullptr
 
     int got = 0;
     size_t scanned = 0;
+    bool stop = false;
+
+    // 单个区段的扫描体。抽成 lambda 是为了让「只扫学到的区段」和「全堆走
+    // VirtualQuery」共用同一份判据代码 —— 两边各写一遍迟早会不同步。
+    auto scan_region = [&](uintptr_t rbase, size_t rsize) {
+        for (uintptr_t off = 0; off < rsize && got < max_out && !stop; off += kChunk) {
+            if (deadline_ms != 0 && GetTickCount64() > deadline_ms) { stop = true; return; }
+            if (limit_bytes != 0 && scanned >= limit_bytes) { stop = true; return; }
+            const size_t left = (size_t)(rsize - off);
+            const size_t n = left < kChunk ? left : kChunk;
+            if (!mem::Read(rbase + off, buf, n)) continue;
+            scanned += n;
+            st.bytes += n;
+            // ★ 内层循环必须也检查 got < max_out。第一版只在外层 while 上
+            //   判断，结果单块缓冲里就能写超几百个 —— 实测 count=3063
+            //   写进了容量 512 的数组，越界把后面的静态变量全毁了。
+            for (size_t i = 0; i + 8 <= n && got < max_out; i += 8) {
+                uintptr_t vt;
+                memcpy(&vt, buf + i, sizeof(vt));
+                if (vt < base || vt >= img_end) continue;
+                ++st.cand;
+                // ★ 类型判据在坐标之前：缓存是 O(1) 组相连，同一个 vtable
+                //   只解析一次。堆里几十万个对象首字都是 vtable，但不同
+                //   vtable 只有几千个，所以这一步实际几乎全是命中。
+                if (!IsActorVtable(vt)) continue;
+                const uintptr_t obj = rbase + off + i;
+                // 坐标字段可能还在这一块缓冲里，直接读；越界才走 mem::Read
+                Vec3 p;
+                const size_t need = i + kOffPos + sizeof(Vec3);
+                if (need <= n) {
+                    memcpy(&p, buf + i + kOffPos, sizeof(p));
+                } else if (!mem::Read(obj + kOffPos, &p, sizeof(p))) {
+                    continue;
+                }
+                if (!PlausibleActorPos(p)) continue;
+                ++st.pos_ok;
+                // ★ 距离锚：实体必须离参考点（本地玩家）不远。
+                //   这是整套判据里唯一有真正区分度的一条。实测：
+                //   只靠「vtable + 坐标范围」，扫 772KB 就有 512 个命中，
+                //   全是同一个 vtable（0xA6A2D18）的数组元素，坐标形如
+                //   (112705.1, 0, 112705.1) —— x==z 对称、y=0。
+                //   加上「离玩家 2048 格内」之后这些全部被排除。
+                if (ref != nullptr) {
+                    if (fabsf(p.x - ref->x) > 2048.0f) continue;
+                    if (fabsf(p.z - ref->z) > 2048.0f) continue;
+                    if (fabsf(p.y - ref->y) > 512.0f) continue;
+                }
+                bool dup = false;
+                for (int k = 0; k < got; ++k) {
+                    if (out[k] == obj) { dup = true; break; }
+                }
+                if (dup) continue;
+                ++st.dist_ok;
+                ++st.hit;
+                out[got++] = obj;
+            }
+        }
+    };
+
+    // 快路径：只扫上次命中过的区段。命中不足 2 个（大概率是新世界/新场景，
+    // 或者实体全换到别的区段了）就退回全量。
+    int lc = use_learned ? LearnedCount() : 0;
+    if (lc > 0) {
+        const ScanRegion* regs = LearnedRegions();
+        for (int i = 0; i < lc && !stop; ++i) {
+            MEMORY_BASIC_INFORMATION mbi;
+            if (VirtualQuery((LPCVOID)regs[i].base, &mbi, sizeof(mbi)) == 0) continue;
+            if (mbi.State != MEM_COMMIT) continue;
+            const DWORD p = mbi.Protect;
+            if ((p & PAGE_GUARD) != 0 || (p & PAGE_NOACCESS) != 0) continue;
+            const size_t sz = regs[i].size < mbi.RegionSize ? regs[i].size : mbi.RegionSize;
+            scan_region(regs[i].base, sz);
+        }
+        if (got >= 2 || (got >= 1 && lc > 0 && limit_bytes != 0)) {
+            if (scanned_out != nullptr) *scanned_out = scanned;
+            return got;
+        }
+        // 退回全量：清掉 got 重新来，避免快路径的残留污染结果
+        got = 0;
+        stop = false;
+    }
 
     // ★ 必须自己走 VirtualQuery：mem::RegionCount()/GetRegion() 只覆盖**主模块
     //   映像**（g_regions 是按 SizeOfImage 枚举的，全部 image=true），拿不到堆。
     //   第一版 ScanActors 就是错在这里，一个区段都没扫，scanned=0x0。
     uintptr_t cur = 0x10000;
     const uintptr_t kUserMax = 0x00007FFFFFFEFFFFull;
-    while (cur < kUserMax && got < max_out) {
+    while (cur < kUserMax && got < max_out && !stop) {
         MEMORY_BASIC_INFORMATION mbi;
         if (VirtualQuery((LPCVOID)cur, &mbi, sizeof(mbi)) == 0) break;
         const uintptr_t rbase = (uintptr_t)mbi.BaseAddress;
@@ -825,68 +954,15 @@ inline int ScanActors(uintptr_t* out, int max_out, size_t* scanned_out = nullptr
             }
         }
 
-        if (want) {
-            for (uintptr_t off = 0; off < rsize && got < max_out; off += kChunk) {
-                if (deadline_ms != 0 && GetTickCount64() > deadline_ms) goto done;
-                if (limit_bytes != 0 && scanned >= limit_bytes) goto done;
-                const size_t left = (size_t)(rsize - off);
-                const size_t n = left < kChunk ? left : kChunk;
-                if (!mem::Read(rbase + off, buf, n)) continue;
-                scanned += n;
-                st.bytes += n;
-                // ★ 内层循环必须也检查 got < max_out。第一版只在外层 while 上
-                //   判断，结果单块缓冲里就能写超几百个 —— 实测 count=3063
-                //   写进了容量 512 的数组，越界把后面的静态变量全毁了。
-                for (size_t i = 0; i + 8 <= n && got < max_out; i += 8) {
-                    uintptr_t vt;
-                    memcpy(&vt, buf + i, sizeof(vt));
-                    if (vt < base || vt >= img_end) continue;
-                    ++st.cand;
-                    // ★ 类型判据提前到这里：缓存是 O(1) 组相连，同一个
-                    //   vtable 只解析一次。堆里几十万个对象首字都是 vtable，
-                    //   但不同 vtable 只有几千个，所以这一步实际几乎全是命中。
-                    //   只有 Actor 家族的才继续往下读坐标，省掉大量无用的
-                    //   跨块读取。
-                    if (!IsActorVtable(vt)) continue;
-                    const uintptr_t obj = rbase + off + i;
-                    // 坐标字段可能还在这一块缓冲里，直接读；越界才走 mem::Read
-                    Vec3 p;
-                    const size_t need = i + kOffPos + sizeof(Vec3);
-                    if (need <= n) {
-                        memcpy(&p, buf + i + kOffPos, sizeof(p));
-                    } else if (!mem::Read(obj + kOffPos, &p, sizeof(p))) {
-                        continue;
-                    }
-                    if (!PlausibleActorPos(p)) continue;
-                    ++st.pos_ok;
-                    // ★ 距离锚：实体必须离参考点（本地玩家）不远。
-                    //   这是整套判据里唯一有真正区分度的一条。实测：
-                    //   只靠「vtable + 坐标范围」，扫 772KB 就有 512 个命中，
-                    //   全是同一个 vtable（0xA6A2D18）的数组元素，坐标形如
-                    //   (112705.1, 0, 112705.1) —— x==z 对称、y=0。
-                    //   加上「离玩家 2048 格内」之后这些全部被排除。
-                    //   ESP 本来也只画 scan_radius 内，不影响功能。
-                    if (ref != nullptr) {
-                        if (fabsf(p.x - ref->x) > 2048.0f) continue;
-                        if (fabsf(p.z - ref->z) > 2048.0f) continue;
-                        if (fabsf(p.y - ref->y) > 512.0f) continue;
-                    }
-                    bool dup = false;
-                    for (int k = 0; k < got; ++k) {
-                        if (out[k] == obj) { dup = true; break; }
-                    }
-                    if (dup) continue;
-                    ++st.dist_ok;
-                    ++st.hit;
-                    out[got++] = obj;
-                }
-            }
-        }
+        if (want) scan_region(rbase, rsize);
 
         if (rend <= cur) break;
         cur = rend;
     }
-done:
+
+    // 全量扫成功就把命中所在区段记下来，下次直接走快路径
+    if (got > 0) LearnRegionsFrom(out, got);
+
     if (scanned_out != nullptr) *scanned_out = scanned;
     return got;
 }
@@ -1065,6 +1141,146 @@ inline uintptr_t LocalPlayer() {
     // ③ 两者都不成立：拉起后台反查，本帧先返回 0（ESP 这帧不画，游戏不受影响）
     StartLocateAsync();
     return 0;
+}
+
+// ── 实体列表：后台扫描 + 快照 ────────────────────────────────────
+//
+// 扫描是 I/O 密集的，绝不能放在渲染线程里。实测这台机器 8GB 内存、load=97%，
+// 游戏 1.24GB 私有堆大部分在页面文件里，纯 memcpy 只有 35~112MB/s —— 全量
+// 一次 30 秒起步，快路径（只扫学到的区段）也要几百毫秒到几秒。
+// 所以：
+//   ① 单独一个后台线程按间隔重扫；
+//   ② 主线程只取地址快照（微秒级），坐标每帧现读，所以只有「谁是实体」
+//      这件事是滞后的（默认 1.5 秒），位置永远是当前值；
+//   ③ 快照用双缓冲 + InterlockedExchange 发布，读者不加锁也不会读到写一半。
+//
+// 为什么不直接 hook 实体出生/销毁：那要拿到 EntityRegistry 的偏移，而这
+// 个 build 上 ECS 下半段整体失效（详见 ScanActors 上面的注释）。
+struct ActorSetState {
+    uintptr_t buf[2][512];
+    int count[2];
+    volatile LONG published;      // 已发布的缓冲下标
+    volatile LONG started;
+    volatile LONG scanning;       // 1 = 正在扫，status 用
+    uint64_t last_full_ms;
+    uint64_t last_fast_ms;
+    uint64_t last_scan_cost_ms;
+    LONG last_scanned_mb;
+};
+
+inline ActorSetState& ActorSetData() {
+    static ActorSetState s;
+    return s;
+}
+
+// 只认「还活着」的实体：vtable 还是 Actor 家族、坐标还合理。
+// 用来把上一轮的地址续进来，避免快路径只扫到一部分时列表跳变。
+inline bool ActorStillValid(uintptr_t a) {
+    if (a == 0) return false;
+    const uintptr_t vt = mem::ReadPtr(a);
+    if (vt == 0 || !IsActorVtable(vt)) return false;
+    Vec3 p;
+    if (!mem::Read(a + kOffPos, &p, sizeof(p))) return false;
+    return PlausibleActorPos(p);
+}
+
+inline int ActorSetSnapshot(uintptr_t* out, int max) {
+    if (out == nullptr || max <= 0) return 0;
+    ActorSetState& s = ActorSetData();
+    const LONG idx = s.published;
+    int n = s.count[idx];
+    if (n > max) n = max;
+    for (int i = 0; i < n; ++i) out[i] = s.buf[idx][i];
+    return n;
+}
+
+// 扫一轮并发布。merge_old=true 时把上一轮仍然有效的地址续进来
+// （快路径只覆盖学到的区段，可能漏掉刚生成的实体，但不会丢老的）。
+inline int ActorSetScanOnce(bool full) {
+    ActorSetState& s = ActorSetData();
+    static uintptr_t tmp[512];
+    static uintptr_t merged[512];
+
+    const uintptr_t lp = LocalPlayer();
+    Vec3 ref;
+    const bool have_ref = (lp != 0) && mem::Read(lp + kOffPos, &ref, sizeof(ref));
+
+    const uint64_t t0 = GetTickCount64();
+    InterlockedExchange(&s.scanning, 1);
+    size_t scanned = 0;
+    const int n = ScanActors(tmp, 512, &scanned, t0 + 180000,
+                            have_ref ? &ref : nullptr, 0, /*use_learned=*/!full);
+    const uint64_t cost = GetTickCount64() - t0;
+    s.last_scan_cost_ms = cost;
+    s.last_scanned_mb = (LONG)(scanned / (1024 * 1024));
+
+    // 合并：新结果优先，再补上一轮里还活着的
+    int m = 0;
+    for (int i = 0; i < n && m < 512; ++i) merged[m++] = tmp[i];
+    const LONG cur = s.published;
+    for (int i = 0; i < s.count[cur] && m < 512; ++i) {
+        const uintptr_t a = s.buf[cur][i];
+        bool dup = false;
+        for (int k = 0; k < m; ++k) {
+            if (merged[k] == a) { dup = true; break; }
+        }
+        if (dup) continue;
+        if (!ActorStillValid(a)) continue;   // 死了就别留着幽灵
+        merged[m++] = a;
+    }
+
+    // 发布到另一半
+    const LONG nxt = 1 - cur;
+    for (int i = 0; i < m; ++i) s.buf[nxt][i] = merged[i];
+    s.count[nxt] = m;
+    InterlockedExchange(&s.published, nxt);
+    InterlockedExchange(&s.scanning, 0);
+    return m;
+}
+
+// 由后台线程调用：按时间决定这次是全量还是快路径。
+inline void ActorSetTick() {
+    ActorSetState& s = ActorSetData();
+    const uint64_t now = GetTickCount64();
+    const uint64_t kFastMs = 1500;     // 快路径间隔
+    const uint64_t kFullMs = 60000;    // 全量补扫间隔（兜住新长出来的区段）
+    const bool need_full = (s.last_full_ms == 0) || (now - s.last_full_ms >= kFullMs);
+    const bool need_fast = (s.last_fast_ms == 0) || (now - s.last_fast_ms >= kFastMs);
+    if (!need_full && !need_fast) return;
+    if (LocalPlayer() == 0) return;    // 没进世界，扫了也是空的
+
+    if (need_full) {
+        ActorSetScanOnce(true);
+        s.last_full_ms = GetTickCount64();
+        s.last_fast_ms = s.last_full_ms;
+        LogLine("[set] 全量扫完成：%d 个，%llu ms，%ld MB",
+                s.count[s.published], (unsigned long long)s.last_scan_cost_ms,
+                s.last_scanned_mb);
+    } else {
+        ActorSetScanOnce(false);
+        s.last_fast_ms = GetTickCount64();
+        LogLine("[set] 快路径扫：%d 个，%llu ms，%ld MB",
+                s.count[s.published], (unsigned long long)s.last_scan_cost_ms,
+                s.last_scanned_mb);
+    }
+}
+
+inline DWORD WINAPI ActorSetThread(LPVOID param) {
+    (void)param;
+    LogLine("[set] 实体列表后台扫描线程启动");
+    for (;;) {
+        Sleep(250);
+        const uintptr_t lp = LocalPlayer();
+        if (lp == 0) continue;         // 还没进世界/已退出，空转不扫
+        ActorSetTick();
+    }
+}
+
+inline void ActorSetStart() {
+    ActorSetState& s = ActorSetData();
+    if (InterlockedCompareExchange(&s.started, 1, 0) != 0) return;
+    HANDLE h = CreateThread(nullptr, 0, ActorSetThread, nullptr, 0, nullptr);
+    if (h != nullptr) CloseHandle(h);
 }
 
 inline bool LocalPlayerPos(uintptr_t lp, Vec3* out) {
