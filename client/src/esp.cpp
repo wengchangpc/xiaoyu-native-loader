@@ -366,19 +366,10 @@ void SetEyeOverride(float h) { g_eye_override = h; }
 float EyeOverride() { return g_eye_override; }
 
 void Render() {
-    // 构建匹配自检：**跟 ESP 开关无关**，只要拿到 LocalPlayer 就跑一次。
-    // 换 build 之后第一件事就是看 native.log 里这几行 —— 任何 MISMATCH
-    // 都说明这份 DLL 不是这个客户端的，后面所有偏移都不可信。
-    {
-        static bool s_chain_done = false;
-        if (!s_chain_done) {
-            const uintptr_t lp0 = sdk::LocalPlayer();
-            if (lp0 != 0) {
-                s_chain_done = true;
-                sdk::ChainReport("boot");
-            }
-        }
-    }
+    // ★ 构建匹配自检挪到「ESP 开关确认打开」之后（见下面）。
+    //   以前放在函数最前面，跟开关无关地每帧调 sdk::LocalPlayer()。
+    //   现在 LocalPlayer() 在硬编码偏移失效时会拉起一次**全堆扫描**（几 GB，
+    //   几秒），放在这里等于用户没开 ESP 也被扫一遍，白白卡游戏。
 
     const int fi = FindFeature(L"ESP");
     if (fi < 0) {
@@ -411,6 +402,20 @@ void Render() {
         g_last_drawn = 0;
         Why("模块开关是关的（配置里写 m.ESP=1，或用管道 esp 1 强制打开）");
         return;
+    }
+
+    // 构建匹配自检：只在 ESP 真正要干活的时候跑一次。
+    // 换 build 之后第一件事就是看 native.log 里这几行 —— 任何 MISMATCH
+    // 都说明这份 DLL 不是这个客户端的，后面所有偏移都不可信。
+    {
+        static bool s_chain_done = false;
+        if (!s_chain_done) {
+            const uintptr_t lp0 = sdk::LocalPlayer();
+            if (lp0 != 0) {
+                s_chain_done = true;
+                sdk::ChainReport("esp");
+            }
+        }
     }
 
     const uintptr_t lp = sdk::LocalPlayer();
