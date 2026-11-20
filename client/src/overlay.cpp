@@ -826,14 +826,54 @@ DWORD WINAPI OverlayThread(LPVOID param) {
 
 }  // namespace
 
+// 窗口所属线程还活着吗？用一个必定被处理的空消息探活。
+// 窗口线程已经退出时，SendMessageTimeout 会一直等到超时才返回 0 ——
+// 这就是"残留窗口"最可靠的判据：残留窗口的消息队列没人泵，
+// 它既不会自己销毁，也永远不响应。
+bool IsWindowResponsive(HWND h) {
+    if (h == nullptr || !IsWindow(h)) return false;
+    DWORD_PTR r = 0;
+    return SendMessageTimeoutW(h, WM_NULL, 0, 0, SMTO_ABORTIFHUNG | SMTO_BLOCK, 80,
+                               &r) != 0;
+}
+
 void StartOverlay() {
-    // 单实例守卫（理由见上面 FindOwnOverlay 的说明）。
-    // 必须在起线程之前判 —— 线程一旦跑起来就已经建好窗口了。
-    HWND exist = FindOwnOverlay();
-    if (exist != nullptr) {
-        LogLine("[overlay] 本进程已有覆盖层在跑 hwnd=%p，本次不重复创建", (void*)exist);
-        InterlockedExchange(&g_life, 2);   // 让 StopOverlay 立刻返回，不用等线程
+    // 只允许本 DLL 实例起一次覆盖层线程。
+    //
+    // 以前这里用 EnumWindows 找同类窗口来判断"是不是已经有实例了"，见到就
+    // 放弃创建 —— 那个逻辑在热替换时会死锁自己：旧实例的渲染线程收尾要几秒
+    // （要等 EndDraw、销毁 D3D、还原光标计数），新 DLL 注入得快，检查时旧
+    // 窗口还在，于是新实例直接放弃，而旧窗口随后就被销毁了 —— 结果一个
+    // 覆盖层都不剩。所以改成"先等旧窗口消失"，只有确认对面还活着才让步。
+    static volatile LONG s_started = 0;
+    if (InterlockedExchange(&s_started, 1) != 0) {
+        LogLine("[overlay] 本实例已经起过覆盖层线程，忽略重复调用");
+        InterlockedExchange(&g_life, 2);
         return;
+    }
+
+    HWND exist = nullptr;
+    for (int i = 0; i < 40; ++i) {         // 最多等 4 秒
+        exist = FindOwnOverlay();
+        if (exist == nullptr) break;
+        Sleep(100);
+    }
+
+    if (exist != nullptr) {
+        if (IsWindowResponsive(exist)) {
+            // 真的有另一个活着的实例在渲染，别去抢它的窗口
+            LogLine("[overlay] 已有活着的覆盖层 hwnd=%p，本次不重复创建", (void*)exist);
+            InterlockedExchange(&g_life, 2);
+            return;
+        }
+        // 对面线程已经死了，窗口是残留。它 alpha=0 看不见，但如果不带
+        // WS_EX_TRANSPARENT 就会把鼠标点击吃掉 —— 兜底改成穿透再往下走。
+        LONG_PTR ex = GetWindowLongPtrW(exist, GWL_EXSTYLE);
+        if ((ex & WS_EX_TRANSPARENT) == 0) {
+            SetWindowLongPtrW(exist, GWL_EXSTYLE, ex | WS_EX_TRANSPARENT);
+        }
+        LogLine("[overlay] 残留窗口 hwnd=%p（线程已退出）已置为点击穿透，继续创建",
+                (void*)exist);
     }
 
     HANDLE th = CreateThread(nullptr, 0, OverlayThread, nullptr, 0, nullptr);

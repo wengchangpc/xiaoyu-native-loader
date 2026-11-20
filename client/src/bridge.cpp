@@ -53,6 +53,22 @@ void P(const char* fmt, ...) {
 bool RunOnce() {
     InterlockedExchange(&g_busy, 1);
 
+    // ★ 抢锁必须在**执行之前**：把 run.bat 原子改名成一个本进程专属的
+    //   临时文件，改名成功才算抢到，然后执行那个临时文件。
+    //
+    //   以前是先 CreateProcess 再改名。问题是 cmd.exe 执行期间一直占着
+    //   run.bat（它要边读边解析），MoveFileEx 直接失败，文件留在原地，
+    //   下一轮轮询又把它执行一遍。热替换场景下这是致命的：新 DLL 的
+    //   bridge 线程会看到旧 DLL 留下的 run.bat，再跑一次里面的
+    //   "unload + inject"，把刚注入的新 DLL 又卸掉，最后什么都不剩。
+    wchar_t tmp[MAX_PATH];
+    swprintf_s(tmp, L"%s\\run_%lu.bat", kDir, (unsigned long)GetCurrentProcessId());
+    if (!MoveFileExW(kCmdPath, tmp, MOVEFILE_REPLACE_EXISTING)) {
+        // 抢不到说明另一个实例刚好拿走了，本轮直接让出
+        InterlockedExchange(&g_busy, 0);
+        return false;
+    }
+
     STARTUPINFOW si;
     PROCESS_INFORMATION pi;
     ZeroMemory(&si, sizeof(si));
@@ -63,7 +79,7 @@ bool RunOnce() {
     si.wShowWindow = SW_HIDE;
 
     wchar_t cmdline[MAX_PATH * 2];
-    swprintf_s(cmdline, L"cmd.exe /c \"%s\"", kCmdPath);
+    swprintf_s(cmdline, L"cmd.exe /c \"%s\"", tmp);
 
     // CREATE_NO_WINDOW：子进程不分配控制台。
     // 注意这里**不加** CREATE_BREAKAWAY_FROM_JOB：游戏进程不一定在 job 里，
@@ -73,7 +89,7 @@ bool RunOnce() {
         const DWORD err = GetLastError();
         P("CreateProcess 失败 err=%lu", (unsigned long)err);
         // 失败了也要把文件挪走，否则会每 500ms 重试一次，刷爆日志
-        MoveFileExW(kCmdPath, kDonePath, MOVEFILE_REPLACE_EXISTING);
+        MoveFileExW(tmp, kDonePath, MOVEFILE_REPLACE_EXISTING);
         InterlockedExchange(&g_busy, 0);
         return false;
     }
@@ -93,7 +109,8 @@ bool RunOnce() {
         P("run.bat 结束 exit=%lu", (unsigned long)code);
     }
 
-    MoveFileExW(kCmdPath, kDonePath, MOVEFILE_REPLACE_EXISTING);
+    // 跑完了再收尾。这时 cmd.exe 已经退出，改名不会失败。
+    MoveFileExW(tmp, kDonePath, MOVEFILE_REPLACE_EXISTING);
     InterlockedIncrement(&g_exec_count);
     InterlockedExchange(&g_busy, 0);
     return true;
