@@ -264,6 +264,77 @@ void DrawBox(float x0, float y0, float x1, float y1, float t, const D2D1_COLOR_F
     render::Line(x0, y1, x0, y0, t, c);
 }
 
+// ── 3D 线框 ─────────────────────────────────────────────────────
+//
+// 2D 框只是一个屏幕包围盒：抬头看人时它变成一个越来越扁的矩形，
+// 和真实形体完全脱节。3D 模式把 8 个角分别投影再连棱，透视是对的，
+// 远处的人框会自然收窄 —— 这也是原版 esp_mode 里 "3d"/"both" 的含义。
+//
+// 顶点编号用 bit 拼：bit0 = x(hi/lo)，bit1 = y，bit2 = z。
+// 于是「相邻顶点」就等价于「编号只差一个 bit」，12 条棱不用手写表。
+struct Corners {
+    float x[8];
+    float y[8];
+    bool ok[8];    // 该角在摄像机前方（Project 失败表示在背面）
+    bool any;
+};
+
+void FillLoHi(const sdk::ActorEntry& e, sdk::Vec3* lo, sdk::Vec3* hi) {
+    if (e.has_bb) {
+        *lo = e.bb_min;
+        *hi = e.bb_max;
+        return;
+    }
+    // 兜底：按玩家尺寸推。pos 是眼睛，脚底要减掉眼高。
+    const float hw = sdk::kPlayerWidth * 0.5f;
+    const float feet = e.pos.y - sdk::kEyeHeight;
+    lo->x = e.pos.x - hw; lo->y = feet;                       lo->z = e.pos.z - hw;
+    hi->x = e.pos.x + hw; hi->y = feet + sdk::kPlayerHeight;   hi->z = e.pos.z + hw;
+}
+
+void BoxCorners(const Camera& cam, const sdk::ActorEntry& e, float w, float h,
+                Corners* out) {
+    sdk::Vec3 lo, hi;
+    FillLoHi(e, &lo, &hi);
+    out->any = false;
+    for (int i = 0; i < 8; ++i) {
+        const float px = (i & 1) ? hi.x : lo.x;
+        const float py = (i & 2) ? hi.y : lo.y;
+        const float pz = (i & 4) ? hi.z : lo.z;
+        out->ok[i] = Project(cam, px, py, pz, w, h, &out->x[i], &out->y[i]);
+        if (out->ok[i]) out->any = true;
+    }
+}
+
+void Draw3DBox(const Corners& c, float t, const D2D1_COLOR_F& col) {
+    for (int a = 0; a < 8; ++a) {
+        for (int b = a + 1; b < 8; ++b) {
+            const int d = a ^ b;
+            if (d != 1 && d != 2 && d != 4) continue;   // 不是相邻顶点，没有棱
+            // 有一端在摄像机后面就连一条几万像素的斜线，比不画更恶心
+            if (!c.ok[a] || !c.ok[b]) continue;
+            render::Line(c.x[a], c.y[a], c.x[b], c.y[b], t, col);
+        }
+    }
+}
+
+// 从 3D 角的投影里反算屏幕包围盒，给文字定位用。
+bool BoundsOf(const Corners& c, float* x0, float* y0, float* x1, float* y1) {
+    if (!c.any) return false;
+    float minx = 1e9f, miny = 1e9f, maxx = -1e9f, maxy = -1e9f;
+    for (int i = 0; i < 8; ++i) {
+        if (!c.ok[i]) continue;
+        if (c.x[i] < minx) minx = c.x[i];
+        if (c.x[i] > maxx) maxx = c.x[i];
+        if (c.y[i] < miny) miny = c.y[i];
+        if (c.y[i] > maxy) maxy = c.y[i];
+    }
+    if (maxx - minx < 2.0f) { minx -= 1.0f; maxx += 1.0f; }
+    if (maxy - miny < 6.0f) { miny -= 3.0f; maxy += 3.0f; }
+    *x0 = minx; *y0 = miny; *x1 = maxx; *y1 = maxy;
+    return true;
+}
+
 // 提前返回时留一句话。上一次 ESP 一根框都不出、日志里一个字都没有，
 // 只能靠猜是"模块没开"还是"链路断了"。这里把每种早退原因都标出来，
 // 限流 2 秒一次，正常运行时不会刷屏（因为正常路径走不到这里）。
@@ -380,6 +451,8 @@ void Render() {
 
     // ── 样式参数 ──
     const float max_dist = ParamOf(fi, L"scan_radius", 64.0f);
+    // 0=2d 1=3d 2=both
+    const int mode = (int)ParamOf(fi, L"esp_mode", 0.0f);
     const bool rainbow = ParamOn(fi, L"rainbow");
     const float rspd = ParamOf(fi, L"rainbow_speed", 12.0f);
     float cr = ParamOf(fi, L"color_r", 1.0f);
@@ -416,13 +489,24 @@ void Render() {
         if (dist > max_dist) continue;
 
         float x0 = 0, y0 = 0, x1 = 0, y1 = 0;
-        if (!BoxOf(cam, e, (float)w, (float)h, &x0, &y0, &x1, &y1)) continue;
+        Corners cor;
+        // esp_mode：0=2d 1=3d 2=both（和原版枚举一致）
+        const bool want_2d = (mode != 1);
+        const bool want_3d = (mode != 0);
+        bool box_ok = false;
+        if (want_2d) box_ok = BoxOf(cam, e, (float)w, (float)h, &x0, &y0, &x1, &y1);
+        if (want_3d) {
+            BoxCorners(cam, e, (float)w, (float)h, &cor);
+            if (!box_ok && cor.any) box_ok = BoundsOf(cor, &x0, &y0, &x1, &y1);
+        }
+        if (!box_ok) continue;
 
         // 完全在屏幕外就跳过（留一点余量，避免边缘闪烁）
         if (x1 < -64.0f || x0 > (float)w + 64.0f) continue;
         if (y1 < -64.0f || y0 > (float)h + 64.0f) continue;
 
-        DrawBox(x0, y0, x1, y1, 1.6f, box);
+        if (want_2d) DrawBox(x0, y0, x1, y1, 1.6f, box);
+        if (want_3d) Draw3DBox(cor, 1.4f, box);
 
         // 名字：类名去掉 Player 后缀太啰嗦，直接原样显示
         wchar_t name[48];
