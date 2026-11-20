@@ -180,6 +180,16 @@ float Wrap180(float d) {
     return d;
 }
 
+// SendInput 只喂前台窗口。后台发出去既改不了游戏视角，又会把系统光标甩走。
+// 和 Clampf 放一起的原因一样：Bhop / Criticals / Aimbot / KillAura 都要用。
+bool GameForeground() {
+    const HWND fg = GetForegroundWindow();
+    if (fg == nullptr) return false;
+    DWORD pid = 0;
+    GetWindowThreadProcessId(fg, &pid);
+    return pid == GetCurrentProcessId();
+}
+
 // 逐字符按 Unicode 注入。中文没法用虚拟键码表示，只能走 KEYEVENTF_UNICODE，
 // 让系统在目标线程里合成 WM_CHAR。基岩版的聊天输入框吃的是 WM_CHAR，
 // 所以这条路能打出中文（用 VkKeyScan 走键盘布局就会被转成问号）。
@@ -535,6 +545,101 @@ void TickAttackSprintReset() {
     }
 }
 
+// ── Bhop ────────────────────────────────────────────────────────
+//
+// 原理：MC 的跳跃判定是 onGround && jumpTriggered == 0，而空中按下的空格会被
+// 记成 jumpPressed，落地那一帧立刻触发。所以「落地即跳」不需要写任何内存，
+// 按住空格就够 —— 这是纯输入能拿到的最好效果，也是最干净的做法。
+//
+// 真正要解决的是别跳得像个机器人：
+//   · 玩家松开所有移动键就停，否则角色会一直原地起跳
+//   · 按住期间周期性松 15~40ms 再按回，打散「完美等距」的输入节奏
+//
+// mode 的 motion 选项原版是直接写 motion 向量，那是最容易被服务端抓的改法，
+// 这里不照抄：两种模式都按 lowhop（纯输入按住空格）跑，只记一次说明。
+constexpr int kBhopJitterMinMs = 600;
+constexpr int kBhopJitterMaxMs = 1400;
+constexpr int kBhopGapMinMs = 15;
+constexpr int kBhopGapMaxMs = 40;
+
+bool g_bhop_holding_space = false;
+ULONGLONG g_bhop_gap_at = 0;      // 下次该松手的时刻
+ULONGLONG g_bhop_resume_at = 0;   // 这次松手到什么时候
+bool g_bhop_warned = false;
+
+// 玩家现在按着任意一个移动键吗。只读 GetAsyncKeyState ——
+// 我们自己只注入 SPACE，不会把这个状态写脏。
+bool AnyMoveKeyDown() {
+    return input::KeyDown('W') || input::KeyDown('A') ||
+           input::KeyDown('S') || input::KeyDown('D');
+}
+
+void TickBhop() {
+    const int fi = FindFeature(L"Bhop");
+    if (!Active(fi)) {
+        if (g_bhop_holding_space) {
+            UnholdKey(VK_SPACE);
+            g_bhop_holding_space = false;
+        }
+        g_bhop_gap_at = 0;
+        g_bhop_resume_at = 0;
+        return;
+    }
+
+    if (!g_bhop_warned && (int)ParamOf(fi, L"mode", 0.0f) == 1) {
+        g_bhop_warned = true;
+        LogLine("[mod] Bhop 的 motion 模式要直接写 motion 向量，反作弊风险最高，"
+                "这里按 lowhop（纯输入按住空格）跑");
+    }
+
+    if (!GameForeground() || !AnyMoveKeyDown()) {
+        if (g_bhop_holding_space) {
+            UnholdKey(VK_SPACE);
+            g_bhop_holding_space = false;
+        }
+        g_bhop_gap_at = 0;
+        g_bhop_resume_at = 0;
+        return;
+    }
+
+    const ULONGLONG now = GetTickCount64();
+
+    // 松手窗口：正在松手的这段时间里什么都不做
+    if (g_bhop_resume_at != 0) {
+        if (now < g_bhop_resume_at) {
+            if (g_bhop_holding_space) {
+                UnholdKey(VK_SPACE);
+                g_bhop_holding_space = false;
+            }
+            return;
+        }
+        g_bhop_resume_at = 0;
+        g_bhop_gap_at = now + (ULONGLONG)(kBhopJitterMinMs +
+                          rand() % (kBhopJitterMaxMs - kBhopJitterMinMs + 1));
+    }
+
+    // 到点了，松一下手
+    if (g_bhop_gap_at != 0 && now >= g_bhop_gap_at) {
+        const int span = kBhopGapMaxMs - kBhopGapMinMs;
+        g_bhop_resume_at = now + (ULONGLONG)(kBhopGapMinMs + (rand() % (span + 1)));
+        if (g_bhop_holding_space) {
+            UnholdKey(VK_SPACE);
+            g_bhop_holding_space = false;
+        }
+        return;
+    }
+
+    if (!g_bhop_holding_space) {
+        HoldKey(VK_SPACE);
+        g_bhop_holding_space = true;
+        if (g_bhop_gap_at == 0) {
+            g_bhop_gap_at = now + (ULONGLONG)(kBhopJitterMinMs +
+                              rand() % (kBhopJitterMaxMs - kBhopJitterMinMs + 1));
+        }
+    }
+}
+
+
 // ── Criticals ───────────────────────────────────────────────────
 //
 // 原理：MC 的暴击判定是「攻击那一瞬间玩家正在下落」（velocity.y < 0、不在飞行、
@@ -585,7 +690,9 @@ void TickCriticals() {
     if (g_crit_phase == 0) {
         if (g_crit_next != 0 && now < g_crit_next) return;
         const bool sneak = ParamOf(fi, L"onsneak", 0.0f) > 0.5f;
-        TapKey(sneak ? VK_LSHIFT : VK_SPACE);
+        // Bhop 可能正一路按着空格（那是它的正常工作状态）。这时候再
+        // TapKey(SPACE) 只会把它松掉，跳跃反而触发不了 —— 换用潜行键。
+        TapKey((sneak || g_bhop_holding_space) ? VK_LSHIFT : VK_SPACE);
         // 起跳后到落段有一段滞空；sneak_delay 和 click_span 都拉长这一段，
         // 给玩家自己留调节余地（默认 0.05 + 0.05 -> 约 320ms 后攻击）
         const float sd = ParamOf(fi, L"sneak_delay", 0.05f);
@@ -918,15 +1025,6 @@ void ApplyAimDelta(float d_yaw, float d_pitch, float step_x, float step_y,
     if (my > 3000) my = 3000;
     if (my < -3000) my = -3000;
     SendMouseMove(mx, my);
-}
-
-// SendInput 只喂前台窗口。后台发出去既改不了游戏视角，又会把系统光标甩走。
-bool GameForeground() {
-    const HWND fg = GetForegroundWindow();
-    if (fg == nullptr) return false;
-    DWORD pid = 0;
-    GetWindowThreadProcessId(fg, &pid);
-    return pid == GetCurrentProcessId();
 }
 
 // 挑目标：aim_range 内、fov 锥内、离相机最近的那个。
@@ -1301,6 +1399,158 @@ void TickKillAura() {
 }
 
 
+// ── TriggerBot ─────────────────────────────────────────────────
+//
+// 和 KillAura 的分工：KillAura 主动把视角转过去再打；TriggerBot 一根手指都
+// 不碰视角，只在准星已经压在目标身上时补一次点击。反作弊画像上后者干净得多 ——
+// 视角完全由玩家自己控制，我们只多按了几下左键，而且是带反应延迟的。
+//
+// 准星命中用角度判据而不是 AABB：本 build 的 AABB 段读不出来（ESP 日志里
+// bb=0 就是这个），只能按近似包围盒算角宽。实体是竖直的，所以水平和垂直
+// 必须分开算 —— 相机一旦俯仰，相机空间里的轴对齐盒子就不成立了。
+constexpr float kTrigHalfW = 0.34f;   // 实体半宽
+constexpr float kTrigUp    = 0.32f;   // 眼睛以上（头顶还留一点）
+constexpr float kTrigDown  = 0.95f;   // 眼睛以下到胸口
+constexpr int   kTrigTickMs = 10;
+constexpr int   kTrigReactMinMs = 35;   // 真人反应延迟下限
+constexpr int   kTrigReactMaxMs = 110;
+
+ULONGLONG g_trig_next = 0;
+ULONGLONG g_trig_react_until = 0;   // 刚锁上目标时的反应延迟到期时刻
+ULONGLONG g_trig_next_click = 0;    // cps 节流
+uintptr_t g_trig_locked = 0;
+bool g_trig_warned = false;
+
+// 准星压在谁身上。命中时写 *hit / *hit_dist，返回是否命中。
+bool CrosshairOnActor(const sdk::GameCamera& cam, float range, float fov_deg,
+                      uintptr_t* hit, float* hit_dist) {
+    uintptr_t list[512];
+    const int n = sdk::ActorSetSnapshot(list, 512);
+    if (n <= 0) return false;
+    const uintptr_t lp = sdk::LocalPlayer();
+    const float half_cos = cosf(Clampf(fov_deg, 1.0f, 360.0f) * 0.5f * 0.01745329f);
+    const float r2 = range * range;
+
+    const float fh = sqrtf(cam.fx * cam.fx + cam.fz * cam.fz);
+    if (fh < 1e-3f) return false;   // 相机几乎垂直朝上/朝下，水平投影退化
+    const float pitch_cam = atan2f(cam.fy, fh);
+
+    bool found = false;
+    float best = 1e9f;
+    for (int i = 0; i < n; ++i) {
+        if (list[i] == lp) continue;
+        sdk::Vec3 p;
+        if (!mem::Read(list[i] + sdk::kOffPos, &p, sizeof(p))) continue;
+        const float dx = p.x - cam.eye.x;
+        const float dy = p.y - cam.eye.y;
+        const float dz = p.z - cam.eye.z;
+        const float d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 < 0.25f || d2 > r2) continue;
+        const float d = sqrtf(d2);
+
+        // 粗筛：中心方向要在 fov 锥内，省掉后面一堆反三角
+        if ((dx * cam.fx + dy * cam.fy + dz * cam.fz) / d < half_cos) continue;
+
+        const float dh = sqrtf(dx * dx + dz * dz);
+        if (dh < 0.05f) continue;   // 目标几乎在正上方/正下方
+
+        // 水平：目标方位角 vs 相机水平朝向，容差 = 半宽 / 水平距离
+        const float cos_h = (dx * cam.fx + dz * cam.fz) / (dh * fh);
+        if (acosf(Clampf(cos_h, -1.0f, 1.0f)) > atanf(kTrigHalfW / dh)) continue;
+
+        // 垂直：目标仰角 vs 相机俯仰角，上下容差不对称（头顶薄、胸口厚）
+        const float dp = atan2f(dy, dh) - pitch_cam;
+        if (dp > atanf(kTrigUp / dh)) continue;
+        if (dp < -atanf(kTrigDown / dh)) continue;
+
+        if (d < best) { best = d; *hit = list[i]; found = true; }
+    }
+    if (found) *hit_dist = best;
+    return found;
+}
+
+void TickTriggerBot() {
+    const int fi = FindFeature(L"TriggerBot");
+    if (!Active(fi)) {
+        g_trig_next = 0;
+        g_trig_react_until = 0;
+        g_trig_next_click = 0;
+        g_trig_locked = 0;
+        return;
+    }
+
+    // 这四个参数依赖的链路本 build 都没通，一次性说清楚，
+    // 免得开着以为生效了。
+    if (!g_trig_warned && (ParamOf(fi, L"onweapon", 0.0f) > 0.5f ||
+                           ParamOf(fi, L"ignoreteammates", 0.0f) > 0.5f ||
+                           ParamOf(fi, L"filterinvisible", 0.0f) > 0.5f ||
+                           ParamOf(fi, L"wallcheck", 0.0f) > 0.5f)) {
+        g_trig_warned = true;
+        LogLine("[mod] TriggerBot 的 onweapon/ignoreteammates/filterinvisible/wallcheck "
+                "需要背包、队伍、可见性链路，本 build 未通，当前按「不过滤」处理");
+    }
+
+    if (!GameForeground()) {
+        g_trig_react_until = 0;
+        g_trig_locked = 0;
+        return;
+    }
+
+    const ULONGLONG now = GetTickCount64();
+    if (now < g_trig_next) return;
+    g_trig_next = now + kTrigTickMs;
+
+    const uintptr_t lp = sdk::LocalPlayer();
+    if (lp == 0) return;
+    const uintptr_t ci = sdk::ClientInstanceOf(lp);
+    if (ci == 0) return;
+    sdk::GameCamera cam;
+    if (!sdk::ReadGameCamera(ci, &cam)) return;
+
+    const float range = Clampf(ParamOf(fi, L"range", 3.5f), 1.0f, 10.0f);
+    const float fov = ParamOf(fi, L"fov", 180.0f);
+
+    uintptr_t hit = 0;
+    float dist = 0.0f;
+    if (!CrosshairOnActor(cam, range, fov, &hit, &dist)) {
+        g_trig_react_until = 0;
+        g_trig_locked = 0;
+        return;
+    }
+
+    // 反应延迟：刚瞄上就立刻开火是机器特征，真人总有一个 35~110ms 的延迟。
+    // 换目标才重排，同一个目标上不重复。
+    if (g_trig_locked != hit) {
+        g_trig_locked = hit;
+        const int span = kTrigReactMaxMs - kTrigReactMinMs;
+        g_trig_react_until = now + (ULONGLONG)(kTrigReactMinMs + (rand() % (span + 1)));
+        return;
+    }
+    if (now < g_trig_react_until) return;
+    if (now < g_trig_next_click) return;
+
+    // 玩家自己按着左键时绝不补点击：MC 里按住左键本来就在连续攻击，
+    // 再插一记等于把 CPS 翻倍，这是最容易被抓的特征。
+    if (input::PhysLeftDown()) return;
+
+    // leftclick=0 时不发点击，只让玩家自己决定什么时候点。默认 1 = 自动点击。
+    if (ParamOf(fi, L"leftclick", 1.0f) > 0.5f) {
+        TapMouse();
+        // 第一次真的开火记一行，远端能确认整条链路（相机 -> 判定 -> 注入）通了
+        static bool logged_fire = false;
+        if (!logged_fire) {
+            logged_fire = true;
+            LogLine("[mod] TriggerBot 首次开火 d=%.2f", dist);
+        }
+    }
+
+    const float cps = Clampf(ParamOf(fi, L"cps", 8.0f), 1.0f, 20.0f);
+    int cycle = (int)(1000.0f / cps);
+    if (cycle < 40) cycle = 40;
+    g_trig_next_click = now + JitterMs(cycle, 18);
+}
+
+
 // ── 投影矩阵（Zoom / BigFov）───────────────────────────────────
 //
 // 实测 probe45：往 ClientInstance+0x520 写 p00=0.2373（原值一半），
@@ -1440,7 +1690,7 @@ bool Implemented(const wchar_t* english_name) {
     static const wchar_t* kSynth[] = {
         L"AC", L"Sprint", L"AntiAFK", L"AutoFish",
         L"NoJumpDelay", L"NoThrowDelay", L"Spammer", L"Spin", L"AttackSprintReset",
-        L"Criticals", L"SprintReset", L"NoBreakDelay",
+        L"Criticals", L"SprintReset", L"NoBreakDelay", L"Bhop",
     };
     for (size_t i = 0; i < sizeof(kSynth) / sizeof(kSynth[0]); ++i) {
         if (wcscmp(kSynth[i], english_name) == 0) return true;
@@ -1457,7 +1707,7 @@ bool Implemented(const wchar_t* english_name) {
     // BorderRender / LineRender / ParticleTrail 是纯本地覆盖层绘制：
     // 相机和实体都走同一条链路，但只画不写，反作弊侧完全无感。
     static const wchar_t* kMemory[] = {L"ESP", L"CoordDisplay", L"Aimbot",
-                                       L"KillAura", L"Zoom", L"BigFov",
+                                       L"KillAura", L"TriggerBot", L"Zoom", L"BigFov",
                                        L"BorderRender", L"LineRender",
                                        L"ParticleTrail"};
     for (size_t i = 0; i < sizeof(kMemory) / sizeof(kMemory[0]); ++i) {
@@ -1557,9 +1807,11 @@ void Tick() {
     TickAttackSprintReset();
     TickSprintReset();
     TickNoBreakDelay();
+    TickBhop();
     TickCriticals();
     TickAimbot();
     TickKillAura();
+    TickTriggerBot();
     TickProjection(false);
     TickSprint();
     TickAntiAfk();
