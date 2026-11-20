@@ -812,6 +812,96 @@ inline ScanRegion* LearnedRegions() {
 
 inline int LearnedCount() { return LearnedCountRef(); }
 
+// 学到的区段落盘。
+//
+// 为什么要落盘：区段是「这一局游戏里实体所在的内存区」，只要游戏进程不死
+// 就一直有效，但我们每次热替换 DLL 都会把静态变量清零 —— 于是每注入一次
+// 都要重新付 173 秒的全量扫描。落盘之后重新注入直接走快路径。
+// 游戏重启后地址全变，快路径命中不足 2 个会自动退回全量，所以不用版本号。
+//
+// 路径取 DLL 自己所在目录，不写死 C://Xiaoyu —— 换目录部署也不会写到别处。
+inline void RegionsFilePath(wchar_t* out, int cap) {
+    if (out == nullptr || cap <= 8) return;
+    out[0] = L'\0';
+    HMODULE mod = nullptr;
+    if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                               GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           (LPCWSTR)(const void*)&RegionsFilePath, &mod) == 0) {
+        return;
+    }
+    wchar_t path[MAX_PATH] = {0};
+    const DWORD n = GetModuleFileNameW(mod, path, MAX_PATH);
+    if (n == 0 || n >= MAX_PATH) return;
+    int cut = -1;
+    for (int i = 0; i < (int)n; ++i) {
+        if (path[i] == L'\\' || path[i] == L'/') cut = i;
+    }
+    if (cut < 0) return;
+    const wchar_t* name = L"\\xiaoyu_regions.txt";
+    int k = 0;
+    for (int i = 0; i <= cut && k < cap - 1; ++i) out[k++] = path[i];
+    for (int i = 0; name[i] != L'\0' && k < cap - 1; ++i) out[k++] = name[i];
+    out[k] = L'\0';
+}
+
+inline void SaveLearnedRegions() {
+    wchar_t path[MAX_PATH] = {0};
+    RegionsFilePath(path, MAX_PATH);
+    if (path[0] == L'\0') return;
+    HANDLE f = CreateFileW(path, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                           FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (f == INVALID_HANDLE_VALUE) return;
+    const ScanRegion* regs = LearnedRegions();
+    const int cnt = LearnedCount();
+    char buf[2048];
+    int off = 0;
+    for (int i = 0; i < cnt && off < (int)sizeof(buf) - 48; ++i) {
+        off += sprintf_s(buf + off, sizeof(buf) - off, "%llX %llX\n",
+                         (unsigned long long)regs[i].base,
+                         (unsigned long long)regs[i].size);
+    }
+    DWORD wrote = 0;
+    if (off > 0) (void)WriteFile(f, buf, (DWORD)off, &wrote, nullptr);
+    CloseHandle(f);
+}
+
+inline void LoadLearnedRegions() {
+    wchar_t path[MAX_PATH] = {0};
+    RegionsFilePath(path, MAX_PATH);
+    if (path[0] == L'\0') return;
+    HANDLE f = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                           FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (f == INVALID_HANDLE_VALUE) return;
+    char buf[2048] = {0};
+    DWORD got = 0;
+    (void)ReadFile(f, buf, sizeof(buf) - 1, &got, nullptr);
+    CloseHandle(f);
+    if (got == 0) return;
+
+    ScanRegion* regs = LearnedRegions();
+    int& cnt = LearnedCountRef();
+    const char* p = buf;
+    while (*p != '\0' && cnt < 48) {
+        char* end = nullptr;
+        const unsigned long long b = strtoull(p, &end, 16);
+        if (end == p) break;
+        p = end;
+        while (*p == ' ') ++p;
+        const unsigned long long sz = strtoull(p, &end, 16);
+        if (end == p) break;
+        p = end;
+        while (*p == '\r' || *p == '\n' || *p == ' ') ++p;
+        if (b == 0 || sz == 0) continue;
+        // 校验一下这段现在还是可读的已提交内存，不然白扫一轮
+        MEMORY_BASIC_INFORMATION mbi;
+        if (VirtualQuery((LPCVOID)(uintptr_t)b, &mbi, sizeof(mbi)) == 0) continue;
+        if (mbi.State != MEM_COMMIT) continue;
+        regs[cnt].base = (uintptr_t)b;
+        regs[cnt].size = (size_t)sz;
+        ++cnt;
+    }
+}
+
 // 对每个命中做 VirtualQuery 取所在区段，去重后记下。
 inline void LearnRegionsFrom(const uintptr_t* objs, int n) {
     if (objs == nullptr || n <= 0) return;
@@ -850,6 +940,12 @@ inline int ScanActors(uintptr_t* out, int max_out, size_t* scanned_out = nullptr
         buf = (uint8_t*)VirtualAlloc(nullptr, kChunk, MEM_COMMIT | MEM_RESERVE,
                                      PAGE_READWRITE);
         if (buf == nullptr) return 0;
+    }
+
+    static bool s_regions_loaded = false;
+    if (!s_regions_loaded) {
+        s_regions_loaded = true;
+        LoadLearnedRegions();
     }
 
     int got = 0;
@@ -964,8 +1060,13 @@ inline int ScanActors(uintptr_t* out, int max_out, size_t* scanned_out = nullptr
         cur = rend;
     }
 
-    // 全量扫成功就把命中所在区段记下来，下次直接走快路径
-    if (got > 0) LearnRegionsFrom(out, got);
+    // 全量扫成功就把命中所在区段记下来，下次直接走快路径（顺便落盘，
+    // 重新注入 DLL 后不用再等一次全量）
+    if (got > 0) {
+        const int before = LearnedCount();
+        LearnRegionsFrom(out, got);
+        if (LearnedCount() != before) SaveLearnedRegions();
+    }
 
     if (scanned_out != nullptr) *scanned_out = scanned;
     return got;
