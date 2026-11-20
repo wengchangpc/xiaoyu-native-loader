@@ -129,6 +129,52 @@ def collect_symbols(lines: list[str]) -> tuple[dict[str, int], dict[str, int]]:
     return defs, decls
 
 
+def check_macro_names(path: Path) -> list[str]:
+    """抓「变量名撞 Windows 宏」这一类错误。
+
+    来历（真实踩过，CI 报错但源码看起来完全正常）：
+        bool near = false;          // windef.h: #define near
+      展开后变成
+        bool  = false;              // error C2513: 'bool': no variable declared before '='
+      编译器报的位置和真正的问题不在一个地方，肉眼排查基本没有胜算。
+
+    只查**声明变量**的位置（`类型 名字 =` / `类型 名字 ;`），
+    不去查表达式里的用法 —— TRUE/NULL 那种在表达式里是正常的。
+    """
+    WIN_MACROS = {
+        # win16 遗产，windef.h 里定义成空
+        "near", "far", "small", "huge",
+        # windef.h，除非显式 NOMINMAX
+        "min", "max",
+        # objbase.h: #define interface struct
+        "interface",
+    }
+    TYPE_WORDS = (
+        r"(?:bool|char|short|int|long|unsigned|float|double|signed|"
+        r"size_t|uintptr_t|intptr_t|uint\d+_t|int\d+_t|"
+        r"WORD|DWORD|BYTE|BOOL|UINT|LONG|ULONG|SHORT|USHORT|FLOAT|DOUBLE|"
+        r"ULONGLONG|LONGLONG|HWND|HANDLE|HMODULE|HINSTANCE|LPVOID|DWORD_PTR)"
+    )
+    pat = re.compile(
+        r"^\s*(?:static\s+|const\s+|constexpr\s+|volatile\s+|register\s+)*"
+        + TYPE_WORDS + r"\s+(?:const\s+)?([A-Za-z_]\w*)\s*(?:=|;|\[|,|\))"
+    )
+    raw = path.read_text(encoding="utf-8", errors="replace")
+    lines = strip_comments(raw).split("\n")
+    problems = []
+    for idx, line in enumerate(lines):
+        m = pat.match(line)
+        if not m:
+            continue
+        name = m.group(1)
+        if name in WIN_MACROS:
+            problems.append(
+                f"{path.name}:{idx + 1}: 变量名 '{name}' 撞了 Windows 宏，"
+                f"声明会被展开掉（改个名字，如 has_{name} / {name}_v）"
+            )
+    return problems
+
+
 def check_file(path: Path) -> list[str]:
     raw = path.read_text(encoding="utf-8", errors="replace")
     lines = strip_comments(raw).split("\n")
@@ -160,13 +206,17 @@ def main() -> int:
     all_problems: list[str] = []
     for f in files:
         try:
+            all_problems.extend(check_macro_names(f))
+        except Exception as exc:  # noqa: BLE001
+            print(f"跳过 {f.name}(宏检查): {exc}")
+        try:
             all_problems.extend(check_file(f))
         except Exception as exc:  # noqa: BLE001
             print(f"跳过 {f.name}: {exc}")
     if not all_problems:
-        print(f"OK：{len(files)} 个文件没发现前向引用")
+        print(f"OK：{len(files)} 个文件没发现前向引用 / 宏名冲突")
         return 0
-    print(f"发现 {len(all_problems)} 处可疑的前向引用：\n")
+    print(f"发现 {len(all_problems)} 处可疑问题：\n")
     for p in sorted(all_problems):
         print("  " + p)
     return 1
