@@ -18,6 +18,8 @@
 #include <string>
 
 #include "esp.h"
+#include "config.h"
+#include "gui/catalog.h"
 #include "log.h"
 #include "memory.h"
 #include "modules.h"
@@ -742,8 +744,76 @@ void CmdWrite(HANDLE h, char** ctx) {
     SendOk(h, msg, (int)strlen(msg));
 }
 
-void CmdDraw(HANDLE h, char** ctx) {
-    char* sub = NextTok(ctx);
+// ── mod / param：远程开关模块和改参数 ───────────────────────────
+//
+// 为什么要这个后门：验证一个模块是否真的生效，原来的流程是
+// 「改配置文件 -> unload -> 重新注入 -> 再测」，一轮两分钟。
+// 有了这两个命令就能在一条管道会话里 A/B，调参也不用重启。
+//
+// 名字一律用英文（kFeatures 的 en）：中文名只用来显示，在管道里传中文
+// 要多绕一层编码，没必要。写入直接走 cfg::SetModuleOn / SetParamValue，
+// 它们内部会 MarkDirty，改动会自动落盘，跟从面板上点是一样的。
+int FindFeatureByName(const char* en) {
+    for (int i = 0; i < kFeatureCount; ++i) {
+        if (kFeatures[i].en == nullptr) continue;
+        char nm[64] = {0};
+        for (int k = 0; k < 63 && kFeatures[i].en[k] != L'\0'; ++k) {
+            nm[k] = (char)kFeatures[i].en[k];
+        }
+        if (_stricmp(nm, en) == 0) return i;
+    }
+    return -1;
+}
+
+// 把宽字符串参数名转成窄串比较（attr 全 ASCII，直接截低字节）
+int FindParamByName(int fi, const char* attr) {
+    if (fi < 0 || fi >= kFeatureCount) return -1;
+    const FeatureInfo& f = kFeatures[fi];
+    for (int k = 0; k < f.paramCount; ++k) {
+        const int idx = f.paramFirst + k;
+        if (kParams[idx].attr == nullptr) continue;
+        char nm[64] = {0};
+        for (int j = 0; j < 63 && kParams[idx].attr[j] != L'\0'; ++j) {
+            nm[j] = (char)kParams[idx].attr[j];
+        }
+        if (_stricmp(nm, attr) == 0) return idx;
+    }
+    return -1;
+}
+
+// mod <英文名> [0|1]
+void CmdMod(HANDLE h, char** ctx) {
+    char* a = NextTok(ctx);
+    if (a == nullptr) { SendErr(h, "mod <英文名> [0|1]"); return; }
+    const int fi = FindFeatureByName(a);
+    if (fi < 0) { SendErr(h, "没有这个功能（用英文名，如 Aimbot）"); return; }
+    char* b = NextTok(ctx);
+    if (b != nullptr) cfg::SetModuleOn(fi, atoi(b) != 0);
+    char msg[128];
+    sprintf_s(msg, "%s on=%d\n", a, cfg::ModuleOn(fi) ? 1 : 0);
+    SendOk(h, msg, (int)strlen(msg));
+}
+
+// param <英文名> <attr> [value]
+void CmdParam(HANDLE h, char** ctx) {
+    char* a = NextTok(ctx);
+    char* b = NextTok(ctx);
+    if (a == nullptr || b == nullptr) {
+        SendErr(h, "param <英文名> <attr> [value]");
+        return;
+    }
+    const int fi = FindFeatureByName(a);
+    if (fi < 0) { SendErr(h, "没有这个功能"); return; }
+    const int pi = FindParamByName(fi, b);
+    if (pi < 0) { SendErr(h, "没有这个参数"); return; }
+    char* c = NextTok(ctx);
+    if (c != nullptr) cfg::SetParamValue(pi, (float)atof(c));
+    char msg[192];
+    sprintf_s(msg, "%s.%s = %.4f\n", a, b, cfg::ParamValue(pi, 0.0f));
+    SendOk(h, msg, (int)strlen(msg));
+}
+
+void CmdDraw(HANDLE h, char** ctx) {    char* sub = NextTok(ctx);
     if (sub == nullptr) { SendErr(h, "draw reset|rect|fill|line|text|commit"); return; }
 
     if (strcmp(sub, "reset") == 0) {
@@ -1083,6 +1153,10 @@ bool Serve(HANDLE h) {
             CmdFov(h, &ctx);
         } else if (strcmp(cmd, "proj") == 0) {
             CmdProj(h, &ctx);
+        } else if (strcmp(cmd, "mod") == 0) {
+            CmdMod(h, &ctx);
+        } else if (strcmp(cmd, "param") == 0) {
+            CmdParam(h, &ctx);
         } else if (strcmp(cmd, "eye") == 0) {
             CmdEye(h, &ctx);
         } else if (strcmp(cmd, "runpy") == 0) {
@@ -1093,7 +1167,7 @@ bool Serve(HANDLE h) {
             CmdUnload(h, &ctx);
             return false;
         } else {
-            SendErr(h, "未知命令（ping/info/actors/scanfov/read/scan/scanactor/scanbench/actorlist/look/focus/lclick/shot/key/projtest/proj/who/write/draw/esp/fov/eye/runpy/inject/unload）");
+            SendErr(h, "未知命令（ping/info/actors/scanfov/read/scan/scanactor/scanbench/actorlist/look/focus/lclick/shot/key/projtest/proj/mod/param/who/write/draw/esp/fov/eye/runpy/inject/unload）");
         }
     }
 }
