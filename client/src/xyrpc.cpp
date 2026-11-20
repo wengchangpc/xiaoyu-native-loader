@@ -298,18 +298,27 @@ void CmdScanActors(HANDLE h, char** ctx) {
 
     static uintptr_t objs[1024];
     size_t scanned = 0;
+
+    // 参考点：本地玩家的坐标。扫堆要靠它做距离过滤 —— 详见 ScanActors 里
+    // 那段注释，没有这个锚的话命中全是坐标形如 (112705.1, 0, 112705.1)
+    // 的数组元素，一个实体都认不出来。
+    const uintptr_t lp = sdk::LocalPlayer();
+    sdk::Vec3 ref;
+    const bool have_ref = (lp != 0) && mem::Read(lp + sdk::kOffPos, &ref, sizeof(ref));
+
     const uint64_t t0 = GetTickCount64();
-    const int n = sdk::ScanActors(objs, cap, &scanned, t0 + 60000);
+    const int n = sdk::ScanActors(objs, cap, &scanned, t0 + 60000,
+                                  have_ref ? &ref : nullptr);
     const uint64_t ms = GetTickCount64() - t0;
 
     std::string s;
     char line[256];
-    sprintf_s(line, "scanned=0x%llX count=%d ms=%llu\n",
-              (unsigned long long)scanned, n, (unsigned long long)ms);
+    sprintf_s(line, "scanned=0x%llX count=%d ms=%llu ref=%s\n",
+              (unsigned long long)scanned, n, (unsigned long long)ms,
+              have_ref ? "yes" : "no");
     s += line;
 
     const uintptr_t base = mem::Base();
-    const uintptr_t lp = sdk::LocalPlayer();
     for (int i = 0; i < n; ++i) {
         sdk::Vec3 p;
         if (!mem::Read(objs[i] + sdk::kOffPos, &p, sizeof(p))) continue;

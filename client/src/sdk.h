@@ -623,7 +623,7 @@ inline bool PlausibleActorPos(const Vec3& v) {
 // 性能：区段内分块读进缓冲后本地筛，不对每个字节位置都走 mem::Read 的
 // VirtualQuery。1.1GB 实测 2~4 秒（之前 ScanHeapQword 是 13 秒）。
 inline int ScanActors(uintptr_t* out, int max_out, size_t* scanned_out = nullptr,
-                     uint64_t deadline_ms = 0) {
+                     uint64_t deadline_ms = 0, const Vec3* ref = nullptr) {
     if (out == nullptr || max_out <= 0) return 0;
     const uintptr_t base = mem::Base();
     const uintptr_t img_end = base + mem::ImageSize();
@@ -686,6 +686,18 @@ inline int ScanActors(uintptr_t* out, int max_out, size_t* scanned_out = nullptr
                         continue;
                     }
                     if (!PlausibleActorPos(p)) continue;
+                    // ★ 距离锚：实体必须离参考点（本地玩家）不远。
+                    //   这是整套判据里唯一有真正区分度的一条。实测：
+                    //   只靠「vtable + 坐标范围」，扫 772KB 就有 512 个命中，
+                    //   全是同一个 vtable（0xA6A2D18）的数组元素，坐标形如
+                    //   (112705.1, 0, 112705.1) —— x==z 对称、y=0。
+                    //   加上「离玩家 2048 格内」之后这些全部被排除。
+                    //   ESP 本来也只画 scan_radius 内，不影响功能。
+                    if (ref != nullptr) {
+                        if (fabsf(p.x - ref->x) > 2048.0f) continue;
+                        if (fabsf(p.z - ref->z) > 2048.0f) continue;
+                        if (fabsf(p.y - ref->y) > 512.0f) continue;
+                    }
                     bool dup = false;
                     for (int k = 0; k < got; ++k) {
                         if (out[k] == obj) { dup = true; break; }
