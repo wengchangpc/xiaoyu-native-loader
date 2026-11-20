@@ -842,14 +842,56 @@ bool AimDelta(const sdk::GameCamera& cam, const sdk::Vec3& tgt,
     return true;
 }
 
+// 光标归中到游戏客户区中心。
+//
+// 为什么需要：MOUSEEVENTF_MOVE 是「屏幕坐标系上的相对位移」，系统会把它
+// 夹在屏幕矩形里。光标贴在边上时（比如 1919 在 1920 宽的屏上）再发 +600
+// 一点实际位移都不产生 —— 游戏拿到的 delta 就是 0，视角纹丝不动。
+// probe60/61 现场就是这样：focus 成功、overlay 恢复渲染，但 look 600 的
+// Δ 恰好是 0.0，同时 GetCursorPos 报 (1919,0)。
+void RecenterCursor() {
+    const HWND fg = GetForegroundWindow();
+    if (fg == nullptr) return;
+    DWORD pid = 0;
+    GetWindowThreadProcessId(fg, &pid);
+    if (pid != GetCurrentProcessId()) return;   // 只在自己的窗口上做，别家
+                                                // 窗口归中会打断用户操作
+    RECT rc;
+    if (!GetClientRect(fg, &rc)) return;
+    POINT p;
+    p.x = (rc.right - rc.left) / 2;
+    p.y = (rc.bottom - rc.top) / 2;
+    if (!ClientToScreen(fg, &p)) return;
+    SetCursorPos(p.x, p.y);
+}
+
+POINT g_cursor_last = {};
+bool  g_cursor_tracked = false;
+
 void SendMouseMove(LONG dx, LONG dy) {
     if (dx == 0 && dy == 0) return;
+
+    // 边界自愈：上一次位移之后光标一点没动，说明这次位移被屏幕边界吃掉了。
+    // 光标「一动不动」这件事本身就是许可 —— MC 捕获鼠标时每帧都会把光标
+    // 钉回窗口中心，真在捕获的话它不可能一直停在原地。所以此刻归中是安全的，
+    // 不会产生游戏侧的虚假大位移。
+    if (g_cursor_tracked) {
+        POINT now;
+        if (GetCursorPos(&now)) {
+            if (now.x == g_cursor_last.x && now.y == g_cursor_last.y) {
+                RecenterCursor();
+            }
+        }
+    }
+
     INPUT in = {};
     in.type = INPUT_MOUSE;
     in.mi.dx = dx;
     in.mi.dy = dy;
     in.mi.dwFlags = MOUSEEVENTF_MOVE;
     SendInput(1, &in, sizeof(in));
+
+    g_cursor_tracked = GetCursorPos(&g_cursor_last) != 0;
 }
 
 // 把角度差按步长发成鼠标位移。frac 是跨 tick 的亚计数余量 ——

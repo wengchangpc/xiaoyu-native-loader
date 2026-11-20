@@ -604,13 +604,19 @@ void Render() {
     }
 
     // 限流日志：ESP 不出框的时候，这三行数字能直接定位是哪一段断了。
+    //
+    // ★ yaw/pitch 必须从相机朝向反算，不能打 me->yaw。ECS 链路失效后实体
+    //   是从扫描表构造的，ActorsFromScan 里 yaw/pitch 是写死的 0，直接打
+    //   永远是 0.0 —— 看着像「相机丢了」，实际只是日志字段没接上。
+    const float cam_yaw = atan2f(-cam.fx, cam.fz) * 57.29578f;
+    const float cam_pitch = -asinf(cam.fy > 1.0f ? 1.0f : (cam.fy < -1.0f ? -1.0f : cam.fy)) * 57.29578f;
     static ULONGLONG last = 0;
     const ULONGLONG now = GetTickCount64();
     if (now - last > 3000) {
         last = now;
         LogLine("[esp] actors=%d bb=%d drawn=%d eye=(%.2f,%.2f,%.2f) yaw=%.1f pitch=%.1f "
                 "fov=%d off=%.2f focal=%.1f screen=%dx%d",
-                n, with_bb, drawn, me->pos.x, me->pos.y, me->pos.z, me->yaw, me->pitch,
+                n, with_bb, drawn, me->pos.x, me->pos.y, me->pos.z, cam_yaw, cam_pitch,
                 FovDeg(), EyeOffset(), cam.focal, w, h);
         if (near_idx >= 0) {
             LogLine("[esp] 最近体 #%d cls=%s pos=(%.2f,%.2f,%.2f) d=%.2f "

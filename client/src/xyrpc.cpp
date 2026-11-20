@@ -380,6 +380,30 @@ void CmdScanBench(HANDLE h, char** ctx) {
 // 实测 lp+0xCF8 起全是 0，整个对象里也没有 4 对连续的角度浮点。
 // 差分就绕开布局猜测：读一段内存 -> 转视角 -> 再读，变动的 float 对就是它。
 // 必须真的移动鼠标（游戏自己把 mRot 从输入增量积分出来，我们没法直接写）。
+// 相对位移会被屏幕边界夹紧成 0（详见 modules.cpp SendMouseMove 的注释）。
+// 探针要量的是「视角变了多少」，位移被夹掉就会得出「look 无效」的假结论，
+// 所以在发之前先预判：加上这次位移会出屏，就先把光标挪回客户区中心。
+void EnsureCursorRoom(int dx, int dy) {
+    POINT cur;
+    if (!GetCursorPos(&cur)) return;
+    const int nx = cur.x + dx;
+    const int ny = cur.y + dy;
+    const int sx = GetSystemMetrics(SM_CXSCREEN);
+    const int sy = GetSystemMetrics(SM_CYSCREEN);
+    if (nx > 8 && nx < sx - 8 && ny > 8 && ny < sy - 8) {
+        return;   // 有足够空间，不动
+    }
+    const HWND fg = GetForegroundWindow();
+    if (fg == nullptr) return;
+    RECT rc;
+    if (!GetClientRect(fg, &rc)) return;
+    POINT p;
+    p.x = (rc.right - rc.left) / 2;
+    p.y = (rc.bottom - rc.top) / 2;
+    if (!ClientToScreen(fg, &p)) return;
+    SetCursorPos(p.x, p.y);
+}
+
 void CmdLook(HANDLE h, char** ctx) {
     char* a = NextTok(ctx);
     char* b = NextTok(ctx);
@@ -391,6 +415,11 @@ void CmdLook(HANDLE h, char** ctx) {
     if (dy > 3000) dy = 3000;
     if (dy < -3000) dy = -3000;
 
+    EnsureCursorRoom(dx, dy);
+
+    POINT before;
+    GetCursorPos(&before);
+
     INPUT in = {};
     in.type = INPUT_MOUSE;
     in.mi.dx = (LONG)dx;
@@ -398,8 +427,14 @@ void CmdLook(HANDLE h, char** ctx) {
     in.mi.dwFlags = MOUSEEVENTF_MOVE;
     const UINT sent = SendInput(1, &in, sizeof(in));
 
-    char msg[96];
-    sprintf_s(msg, "look dx=%d dy=%d sent=%u err=%lu\n", dx, dy, sent, GetLastError());
+    POINT after;
+    GetCursorPos(&after);
+
+    // 把位移前后光标位置一起回报：Δ(cur) 是 0 就说明这次位移被边界吃了，
+    // 视角不动的锅不在 look 通道上，别拿它当「鼠标注入不可用」的证据。
+    char msg[160];
+    sprintf_s(msg, "look dx=%d dy=%d sent=%u cur=(%ld,%ld)->(%ld,%ld) moved=%ld\n",
+              dx, dy, sent, before.x, before.y, after.x, after.y, after.x - before.x);
     SendOk(h, msg, (int)strlen(msg));
 }
 
@@ -529,6 +564,104 @@ void CmdFocus(HANDLE h, char** ctx) {
     sprintf_s(msg, "focus hwnd=0x%llX setfg=%d now_fg=0x%llX\n",
               (unsigned long long)c.found, (int)ok,
               (unsigned long long)GetForegroundWindow());
+    SendOk(h, msg, (int)strlen(msg));
+}
+
+// recapture [esc次数] —— 一键把游戏恢复到「吃输入」的状态，每一步的结果都回报。
+//
+// 为什么需要：游戏失焦会自己释放鼠标捕获，切回前台也不会自动拿回来。
+// 之前要手工拼 focus -> Esc -> lclick 三步，而且 lclick 点是光标当前位置 ——
+// 光标贴在屏幕角落时点击根本落不到游戏客户区里。probe60 现场就是：
+// focus 成功（setfg=1）、overlay 恢复渲染，但 look 600 的 Δ 恰好 0.0，
+// 同时 GetCursorPos 报 (1919,0)，屏宽 1920。
+//
+// 顺序（卡在哪一步，看回包里的字段就知道）：
+//   1. 找窗口、去最小化、抢前台（前台锁的坑见 CmdFocus 上面的注释）
+//   2. 光标归中到客户区中心 —— 既保证点击落在画面里，也保证随后的相对位移
+//      有空间。贴边的光标发 MOUSEEVENTF_MOVE 是零位移。
+//   3. 点一次左键，让游戏重新捕获鼠标
+//   4. esc 参数给几次就按几次 Esc。默认 0 次：游戏本来没暂停时发 Esc 反而
+//      会把暂停菜单打开，必须由调用方显式要求。
+struct CapProbe {
+    HWND hwnd;
+    BOOL setfg;
+    BOOL iconic_before;
+    RECT client;
+    int clicks;
+    int esc_sent;
+};
+
+void CmdRecapture(HANDLE h, char** ctx) {
+    char* a = NextTok(ctx);
+    int esc = (a != nullptr) ? atoi(a) : 0;
+    if (esc < 0) esc = 0;
+    if (esc > 4) esc = 4;
+
+    CapProbe p = {};
+    FocusCtx c;
+    c.pid = GetCurrentProcessId();
+    c.found = nullptr;
+    EnumWindows(FocusEnumProc, (LPARAM)&c);
+    if (c.found == nullptr) { SendErr(h, "没找到游戏窗口"); return; }
+    p.hwnd = c.found;
+    p.iconic_before = IsIconic(c.found);
+
+    // 1. 去最小化 + 抢前台
+    if (p.iconic_before) ShowWindow(c.found, SW_RESTORE);
+    const HWND fg0 = GetForegroundWindow();
+    const DWORD fg_tid = (fg0 != nullptr) ? GetWindowThreadProcessId(fg0, nullptr) : 0;
+    const DWORD my_tid = GetCurrentThreadId();
+    bool attached = false;
+    if (fg_tid != 0 && fg_tid != my_tid) {
+        attached = AttachThreadInput(my_tid, fg_tid, TRUE) != 0;
+    }
+    p.setfg = SetForegroundWindow(c.found);
+    BringWindowToTop(c.found);
+    SetActiveWindow(c.found);
+    if (attached) AttachThreadInput(my_tid, fg_tid, FALSE);
+    Sleep(140);
+
+    // 2. 光标归中
+    GetClientRect(c.found, &p.client);
+    POINT pt;
+    pt.x = (p.client.right - p.client.left) / 2;
+    pt.y = (p.client.bottom - p.client.top) / 2;
+    ClientToScreen(c.found, &pt);
+    SetCursorPos(pt.x, pt.y);
+    Sleep(60);
+
+    // 3. 点击让游戏重新捕获
+    INPUT clk[2] = {};
+    clk[0].type = INPUT_MOUSE;
+    clk[0].mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
+    clk[1].type = INPUT_MOUSE;
+    clk[1].mi.dwFlags = MOUSEEVENTF_LEFTUP;
+    if (SendInput(2, clk, sizeof(INPUT)) == 2) p.clicks = 1;
+    Sleep(80);
+
+    // 4. 可选 Esc
+    for (int i = 0; i < esc; ++i) {
+        INPUT kin[2] = {};
+        kin[0].type = INPUT_KEYBOARD;
+        kin[0].ki.wVk = VK_ESCAPE;
+        kin[1].type = INPUT_KEYBOARD;
+        kin[1].ki.wVk = VK_ESCAPE;
+        kin[1].ki.dwFlags = KEYEVENTF_KEYUP;
+        if (SendInput(2, kin, sizeof(INPUT)) == 2) ++p.esc_sent;
+        Sleep(150);
+    }
+
+    POINT cur;
+    GetCursorPos(&cur);
+    const HWND fg1 = GetForegroundWindow();
+    char msg[320];
+    sprintf_s(msg,
+              "recapture hwnd=0x%llX iconic_before=%d setfg=%d fg_now=0x%llX fg_ok=%d "
+              "client=%ldx%ld cursor=(%ld,%ld) clicks=%d esc=%d\n",
+              (unsigned long long)p.hwnd, (int)p.iconic_before, (int)p.setfg,
+              (unsigned long long)fg1, (int)(fg1 == p.hwnd),
+              (long)p.client.right, (long)p.client.bottom, cur.x, cur.y,
+              p.clicks, p.esc_sent);
     SendOk(h, msg, (int)strlen(msg));
 }
 
@@ -1135,6 +1268,8 @@ bool Serve(HANDLE h) {
             CmdActorList(h, &ctx);
         } else if (strcmp(cmd, "focus") == 0) {
             CmdFocus(h, &ctx);
+        } else if (strcmp(cmd, "recapture") == 0) {
+            CmdRecapture(h, &ctx);
         } else if (strcmp(cmd, "lclick") == 0) {
             CmdLClick(h, &ctx);
         } else if (strcmp(cmd, "shot") == 0) {
@@ -1167,7 +1302,7 @@ bool Serve(HANDLE h) {
             CmdUnload(h, &ctx);
             return false;
         } else {
-            SendErr(h, "未知命令（ping/info/actors/scanfov/read/scan/scanactor/scanbench/actorlist/look/focus/lclick/shot/key/projtest/proj/mod/param/who/write/draw/esp/fov/eye/runpy/inject/unload）");
+            SendErr(h, "未知命令（ping/info/actors/scanfov/read/scan/scanactor/scanbench/actorlist/look/focus/recapture/lclick/shot/key/projtest/proj/mod/param/who/write/draw/esp/fov/eye/runpy/inject/unload）");
         }
     }
 }
