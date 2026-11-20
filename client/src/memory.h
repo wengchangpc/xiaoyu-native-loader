@@ -101,13 +101,18 @@ int FindAllQword(uint64_t value, uintptr_t* out, int max,
 //
 // 只扫 MEM_PRIVATE + 可写区域：映像本身已经用 Scan 查过，文件映射不可能是
 // 堆对象。skip_noaccess 之类的属性检查在内部做，读到不可访问页会跳过。
+//
+// deadline_ms：绝对时间点（GetTickCount64 的刻度），超过就跳过剩下的区段。
+// 传 0 = 不限时。加这个是因为进程的私有内存可能有几 GB，特征码打错时
+// 会一路扫到底，几十秒的持续内存带宽占用足以让游戏掉帧。
 struct HeapHit {
     uintptr_t addr;
     int index;      // 命中的是 needles[index]
 };
 int ScanHeapQword(const uint64_t* needles, int needle_count,
                   HeapHit* out, int max_out,
-                  size_t* scanned_bytes = nullptr);
+                  size_t* scanned_bytes = nullptr,
+                  uint64_t deadline_ms = 0);
 
 // 同上，但按字节特征码扫（找字符串 / 结构体特征时用）
 int ScanHeapPattern(const char* pattern, uintptr_t* out, int max_out,

@@ -666,7 +666,8 @@ void ForEachPrivateRegion(Fn fn, size_t* scanned) {
 }  // namespace
 
 int ScanHeapQword(const uint64_t* needles, int needle_count,
-                  HeapHit* out, int max_out, size_t* scanned_bytes) {
+                  HeapHit* out, int max_out, size_t* scanned_bytes,
+                  uint64_t deadline_ms) {
     if (needles == nullptr || needle_count <= 0 || out == nullptr || max_out <= 0) {
         return 0;
     }
@@ -694,6 +695,7 @@ int ScanHeapQword(const uint64_t* needles, int needle_count,
     ForEachPrivateRegion(
         [&](uintptr_t base, size_t size) {
             if (found >= max_out) return;
+            if (deadline_ms != 0 && GetTickCount64() > deadline_ms) return;
             uintptr_t off = 0;
             while (off < size && found < max_out) {
                 size_t n = kChunk;

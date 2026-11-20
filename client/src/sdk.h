@@ -461,7 +461,11 @@ inline uintptr_t FindLocalPlayerObject(size_t* scanned_out) {
         const uint64_t needle = (uint64_t)(base + try_rva[k]);
         mem::HeapHit hits[32];
         size_t scanned = 0;
-        const int n = mem::ScanHeapQword(&needle, 1, hits, 32, &scanned);
+        // 30 秒上限：这个进程的私有可写内存不大，正常两三秒就扫完；
+        // 万一 vtable RVA 是错的，扫不到就会一路扫到底 —— 那种情况下
+        // 让它卡 30 秒再放弃，比拖垮游戏强。
+        const int n = mem::ScanHeapQword(&needle, 1, hits, 32, &scanned,
+                                         GetTickCount64() + 30000);
         total += scanned;
         LogLine("[sdk] 扫堆(%s)：%.1f MB，%d 个候选",
                 k == 0 ? "LocalPlayer" : "Player",
