@@ -1482,7 +1482,9 @@ inline bool ReadGameCamera(uintptr_t ci, GameCamera* c) {
     const float n0 = m[0] * m[0] + m[4] * m[4] + m[8] * m[8];
     const float n1 = m[1] * m[1] + m[5] * m[5] + m[9] * m[9];
     if (n0 < 0.9f || n0 > 1.1f || n1 < 0.9f || n1 > 1.1f) return false;
-    if (p00 < 0.05f || p00 > 20.0f || p11 < 0.05f || p11 > 20.0f) return false;
+    // 下限放到 0.005：Zoom / BigFov 会主动改写投影（p11 最小到 0.05），
+    // 原来卡 0.05 的下限正好落在边界上，一缩放到极限位置 ESP 就瞎了。
+    if (p00 < 0.005f || p00 > 50.0f || p11 < 0.005f || p11 > 50.0f) return false;
     if (!PlausiblePos(cam)) return false;
 
     c->eye = cam;

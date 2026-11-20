@@ -20,6 +20,7 @@
 #include "esp.h"
 #include "log.h"
 #include "memory.h"
+#include "modules.h"
 #include "render.h"
 #include "self.h"
 #include "sdk.h"
@@ -823,6 +824,9 @@ void CmdDraw(HANDLE h, char** ctx) {
 void CmdUnload(HANDLE h, char** ctx) {
     char* mode = NextTok(ctx);
     const bool hard = (mode != nullptr && strcmp(mode, "hard") == 0);
+    // 卸载前先还原投影：Zoom / BigFov 写的是缓存值，DLL 走了没人维持，
+    // 画面会永远停在放大状态。写失败也不拦卸载，只是记一行。
+    modules::RestoreProjection();
     SendOk(h, "bye", 3);
     self::RequestUnload(hard);
 }
@@ -860,6 +864,49 @@ void CmdFov(HANDLE h, char** ctx) {
     esp::SetFovOverride(atoi(v));
     char msg[32];
     sprintf_s(msg, "fov=%d", esp::FovOverride());
+    SendOk(h, msg, (int)strlen(msg));
+}
+
+// proj [deg] —— 读（或按垂直 fov 写）ClientInstance 的投影矩阵。
+//
+// 只读时输出 p00 / p11 和反算出来的水平、垂直 fov，用来确认「投影到底在什么状态」；
+// 带参数时按 p11 = 1/tan(fov/2) 写进去，p00 按方像素比例跟着改，等于临时做一次
+// Zoom / BigFov，用来验证「写进去会不会被游戏覆盖」。
+void CmdProj(HANDLE h, char** ctx) {
+    const uintptr_t lp = sdk::LocalPlayer();
+    if (lp == 0) { SendErr(h, "没进世界"); return; }
+    const uintptr_t ci = sdk::ClientInstanceOf(lp);
+    if (ci == 0) { SendErr(h, "ClientInstance 拿不到"); return; }
+
+    float pr[6] = {0};
+    if (!mem::Read(ci + sdk::kOffCiProjection, pr, sizeof(pr))) {
+        SendErr(h, "读投影失败");
+        return;
+    }
+    char msg[256];
+    const float p00 = pr[0];
+    const float p11 = pr[5];
+    const float fov_v = 2.0f * (float)atan(1.0 / (p11 > 1e-6f ? p11 : 1e-6f)) * 57.29578f;
+    sprintf_s(msg, "ci=0x%llX p00=%.6f p11=%.6f fov_v=%.1f",
+              (unsigned long long)ci, p00, p11, fov_v);
+
+    char* a = NextTok(ctx);
+    if (a != nullptr) {
+        float want_v = (float)atof(a);
+        if (want_v < 2.0f) want_v = 2.0f;
+        if (want_v > 178.0f) want_v = 178.0f;
+        const float np11 = 1.0f / (float)tan(want_v * 0.5f * 0.01745329f);
+        const float ratio = p11 / np11;          // >1 = 视野变宽
+        float np00 = p00 / ratio;
+        if (np00 < 0.005f) np00 = 0.005f;
+        const bool w1 = mem::Write(ci + sdk::kOffCiProjection + 0x14, &np11, sizeof(float));
+        const bool w2 = mem::Write(ci + sdk::kOffCiProjection, &np00, sizeof(float));
+        char tail[128];
+        sprintf_s(tail, " | 写入 fov_v=%.1f -> p00=%.6f p11=%.6f w=%d%d",
+                  want_v, np00, np11, w1 ? 1 : 0, w2 ? 1 : 0);
+        strcat_s(msg, tail);
+    }
+    strcat_s(msg, "\n");
     SendOk(h, msg, (int)strlen(msg));
 }
 
@@ -1034,6 +1081,8 @@ bool Serve(HANDLE h) {
             CmdEsp(h, &ctx);
         } else if (strcmp(cmd, "fov") == 0) {
             CmdFov(h, &ctx);
+        } else if (strcmp(cmd, "proj") == 0) {
+            CmdProj(h, &ctx);
         } else if (strcmp(cmd, "eye") == 0) {
             CmdEye(h, &ctx);
         } else if (strcmp(cmd, "runpy") == 0) {
@@ -1044,7 +1093,7 @@ bool Serve(HANDLE h) {
             CmdUnload(h, &ctx);
             return false;
         } else {
-            SendErr(h, "未知命令（ping/info/actors/scanfov/read/scan/scanactor/scanbench/actorlist/look/focus/lclick/shot/key/projtest/who/write/draw/esp/fov/eye/runpy/inject/unload）");
+            SendErr(h, "未知命令（ping/info/actors/scanfov/read/scan/scanactor/scanbench/actorlist/look/focus/lclick/shot/key/projtest/proj/who/write/draw/esp/fov/eye/runpy/inject/unload）");
         }
     }
 }

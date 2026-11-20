@@ -522,6 +522,76 @@ void TickAttackSprintReset() {
     }
 }
 
+// ── Criticals ───────────────────────────────────────────────────
+//
+// 原理：MC 的暴击判定是「攻击那一瞬间玩家正在下落」（velocity.y < 0、不在飞行、
+// 不在水里/梯子上、没骑乘），伤害 ×1.5。光点鼠标不会暴击 —— 玩家的原始点击
+// 在按下瞬间就被游戏判定完了，我们来不及在它前面插一个跳跃。
+//
+// 所以这里做的是「按住左键时自动跳劈」：替玩家起跳，等落到下落段再补一次攻击。
+// 代价是攻击频率被跳跃周期卡住（一次约 0.6s），换来的是一刀 1.5 倍。
+//
+// 反作弊上这是**合法动作序列**：跳跃和点击都是正常输入，没有改内存、没有改包，
+// 唯一的指纹是节奏固定，所以周期加了 ±12% 抖动。
+//
+// onsneak 开时用潜行替代起跳（有些服务端的判定把潜行也算进暴击条件）。
+ULONGLONG g_crit_next = 0;
+int g_crit_phase = 0;          // 0=等起跳 1=已起跳，等落段
+ULONGLONG g_crit_attack_at = 0;
+
+void TickCriticals() {
+    const int fi = FindFeature(L"Criticals");
+    if (!Active(fi)) {
+        g_crit_next = 0;
+        g_crit_phase = 0;
+        g_crit_attack_at = 0;
+        return;
+    }
+
+    const bool on_click = ParamOf(fi, L"onclick", 0.0f) > 0.5f;
+    const bool on_hold = ParamOf(fi, L"onhold", 0.0f) > 0.5f;
+    const bool any_trigger = on_click || on_hold;
+
+    const bool held = input::PhysLeftDown();
+    if (any_trigger && !held) {
+        g_crit_phase = 0;
+        g_crit_next = 0;
+        return;
+    }
+    if (ParamOf(fi, L"onweapon", 0.0f) > 0.5f) {
+        // 手持物品链路还没通，和 Aimbot 一样只提示一次，按常开跑
+        static bool warned = false;
+        if (!warned) {
+            warned = true;
+            LogLine("[mod] Criticals 的「仅持武器」还没有手持物品链路，当前按常开处理");
+        }
+    }
+
+    const ULONGLONG now = GetTickCount64();
+
+    if (g_crit_phase == 0) {
+        if (g_crit_next != 0 && now < g_crit_next) return;
+        const bool sneak = ParamOf(fi, L"onsneak", 0.0f) > 0.5f;
+        TapKey(sneak ? VK_LSHIFT : VK_SPACE);
+        // 起跳后到落段有一段滞空；sneak_delay 和 click_span 都拉长这一段，
+        // 给玩家自己留调节余地（默认 0.05 + 0.05 -> 约 320ms 后攻击）
+        const float sd = ParamOf(fi, L"sneak_delay", 0.05f);
+        const float cs = ParamOf(fi, L"click_span", 0.05f);
+        int wait = 300 + (int)((sd + cs) * 200.0f);
+        if (wait < 180) wait = 180;
+        if (wait > 520) wait = 520;
+        g_crit_attack_at = now + (ULONGLONG)wait;
+        g_crit_phase = 1;
+        return;
+    }
+
+    if (now < g_crit_attack_at) return;
+    TapMouse();
+    g_crit_phase = 0;
+    // 一个完整跳跃周期约 600ms，±12% 抖动
+    g_crit_next = now + JitterMs(600, 12);
+}
+
 // ── Aimbot ──────────────────────────────────────────────────────
 //
 // 视角不在 Actor 上：实测 LocalPlayer 前 24KB 里没有任何 float 跟着视角变，
@@ -773,6 +843,127 @@ void TickAimbot() {
     SendMouseMove(mx, my);
 }
 
+// ── 投影矩阵（Zoom / BigFov）───────────────────────────────────
+//
+// 实测 probe45：往 ClientInstance+0x520 写 p00=0.2373（原值一半），
+// 0 / 16 / 100 / 500 / 1500ms 五次读回都还是写入值 —— 投影是**缓存**的，
+// 只在玩家改 FOV 设置或窗口 resize 时重算。所以不用每帧重写，目标值变了写一次就够。
+//
+// 布局：p00 在 +0x00（水平），p11 在 +0x14（垂直），中间是 3 个 0。
+// 两者共用一个 focal，是「方像素」关系 p00 * W == p11 * H，必须等比缩放：
+//   只改一个会把画面拉扁，而且 ESP / Aimbot 的屏幕投影按 p11 算 focal，
+//   横向就会整体错位。
+//
+// fov 参数按**垂直** FOV 解释（MC 的 fov 设置就是垂直的）：
+//   p11_tgt = 1 / tan(fov/2)
+//   s       = p11_base / p11_tgt      (s > 1 = 视野变宽 = 画面缩小)
+//   p00_tgt = p00_base / s
+constexpr float kProjMin = 0.05f;    // 再小投影就病态了，画面会崩成一团
+constexpr float kProjMax = 20.0f;
+
+float g_proj_p00_base = 0.0f;    // 游戏自己算的 p00
+float g_proj_p11_base = 0.0f;    // 游戏自己算的 p11
+float g_proj_written = 0.0f;     // 我们上次写进去的 p11（用来区分是不是自己写的）
+bool  g_proj_have_base = false;
+float g_zoom_cur_p11 = 0.0f;     // 平滑中的 p11
+bool  g_zoom_warned = false;
+
+// 按垂直 fov 反算 p11
+float P11FromFov(float fov_deg) {
+    const float f = Clampf(fov_deg, 2.0f, 178.0f);
+    return 1.0f / tanf(f * 0.5f * 0.01745329f);
+}
+
+void WriteProjP11(uintptr_t ci, float v) {
+    mem::Write(ci + sdk::kOffCiProjection + 0x14, &v, sizeof(float));
+}
+
+void WriteProjP00(uintptr_t ci, float v) {
+    mem::Write(ci + sdk::kOffCiProjection, &v, sizeof(float));
+}
+
+void TickProjection(bool force_restore) {
+    const int zoom_fi = FindFeature(L"Zoom");
+    const int big_fi = FindFeature(L"BigFov");
+    const bool any_on = (!force_restore) &&
+                        ((zoom_fi >= 0 && cfg::ModuleOn(zoom_fi)) ||
+                         (big_fi >= 0 && cfg::ModuleOn(big_fi)));
+    if (!any_on && !g_proj_have_base) return;
+
+    const uintptr_t lp = sdk::LocalPlayer();
+    if (lp == 0) { g_proj_have_base = false; return; }
+    const uintptr_t ci = sdk::ClientInstanceOf(lp);
+    if (ci == 0) { g_proj_have_base = false; return; }
+
+    float pr[6] = {0};
+    if (!mem::Read(ci + sdk::kOffCiProjection, pr, sizeof(pr))) {
+        g_proj_have_base = false;
+        return;
+    }
+    const float cur_p00 = pr[0];
+    const float cur_p11 = pr[5];
+    if (cur_p00 < 0.005f || cur_p00 > 50.0f || cur_p11 < 0.005f || cur_p11 > 50.0f) {
+        g_proj_have_base = false;
+        return;
+    }
+
+    // 基准的维护：读到的 p11 跟我们上次写的对不上，说明游戏自己重算过，
+    // 那就把它当新的基准。否则沿用旧基准，避免把自己写的值再缩一次（叠乘）。
+    if (!g_proj_have_base || fabsf(cur_p11 - g_proj_written) > 1e-4f) {
+        g_proj_p00_base = cur_p00;
+        g_proj_p11_base = cur_p11;
+        g_zoom_cur_p11 = cur_p11;
+        g_proj_have_base = true;
+        if (fabsf(cur_p11 - g_proj_written) > 1e-4f) g_proj_written = cur_p11;
+    }
+
+    // ── 目标 p11 ──────────────────────────────────────────────
+    float want_p11 = g_proj_p11_base;
+    const int zoom_bind = (zoom_fi >= 0) ? cfg::ModuleBind(zoom_fi) : 0;
+    const bool zoom_on = !force_restore && zoom_fi >= 0 && cfg::ModuleOn(zoom_fi);
+    const bool zoom_held = zoom_on && zoom_bind != 0 && input::KeyDown(zoom_bind);
+
+    if (zoom_held) {
+        const float f = ParamOf(zoom_fi, L"fov", 30.0f);
+        const float tgt = P11FromFov(f);
+        const float sp = Clampf(ParamOf(zoom_fi, L"smooth_speed", 0.35f), 0.01f, 1.0f);
+        g_zoom_cur_p11 += (tgt - g_zoom_cur_p11) * sp;
+        want_p11 = g_zoom_cur_p11;
+    } else if (!force_restore && big_fi >= 0 && cfg::ModuleOn(big_fi)) {
+        want_p11 = P11FromFov(ParamOf(big_fi, L"fov", 120.0f));
+        g_zoom_cur_p11 = g_proj_p11_base;
+    } else {
+        g_zoom_cur_p11 = g_proj_p11_base;
+    }
+
+    // Zoom 开着但没绑键：没触发条件，提示一次（只提示不生效，别默默什么都不做）
+    if (zoom_on && zoom_bind == 0) {
+        if (!g_zoom_warned) {
+            g_zoom_warned = true;
+            LogLine("[mod] Zoom 需要先绑一个键（按住生效），当前没绑所以不动手");
+        }
+    } else {
+        g_zoom_warned = false;
+    }
+
+    if (want_p11 < kProjMin) want_p11 = kProjMin;
+    if (want_p11 > kProjMax) want_p11 = kProjMax;
+
+    // ── 按比例推 p00，然后只在真的变了才写 ────────────────────
+    const float s = g_proj_p11_base / want_p11;
+    float want_p00 = g_proj_p00_base / s;
+    if (want_p00 < kProjMin) want_p00 = kProjMin;
+    if (want_p00 > kProjMax) want_p00 = kProjMax;
+
+    if (fabsf(want_p11 - cur_p11) > 1e-5f) {
+        WriteProjP11(ci, want_p11);
+        g_proj_written = want_p11;
+    }
+    if (fabsf(want_p00 - cur_p00) > 1e-5f) {
+        WriteProjP00(ci, want_p00);
+    }
+}
+
 }  // namespace
 
 bool Implemented(const wchar_t* english_name) {
@@ -791,6 +982,7 @@ bool Implemented(const wchar_t* english_name) {
     static const wchar_t* kSynth[] = {
         L"AC", L"Sprint", L"AntiAFK", L"AutoFish",
         L"NoJumpDelay", L"NoThrowDelay", L"Spammer", L"Spin", L"AttackSprintReset",
+        L"Criticals",
     };
     for (size_t i = 0; i < sizeof(kSynth) / sizeof(kSynth[0]); ++i) {
         if (wcscmp(kSynth[i], english_name) == 0) return true;
@@ -802,7 +994,9 @@ bool Implemented(const wchar_t* english_name) {
     // 最便宜的一个"链路是否还活着"的探针。
     // Aimbot 用的是 ClientInstance 那条：静态 kClientInstance -> 4×4 旋转矩阵
     // + Projection + CameraPos，再来回合成鼠标位移。不走 mRot（Actor 上没这个字段）。
-    static const wchar_t* kMemory[] = {L"ESP", L"CoordDisplay", L"Aimbot"};
+    // Zoom / BigFov 只写 ClientInstance+0x520 的 p00/p11（实测写进去不会被覆盖）。
+    static const wchar_t* kMemory[] = {L"ESP", L"CoordDisplay", L"Aimbot",
+                                       L"Zoom", L"BigFov"};
     for (size_t i = 0; i < sizeof(kMemory) / sizeof(kMemory[0]); ++i) {
         if (wcscmp(kMemory[i], english_name) == 0) return true;
     }
@@ -833,6 +1027,15 @@ void ReleaseAll() {
     g_aim_pick_at = 0;
     g_aim_click_until = 0;
     g_aim_prev_left = false;
+    g_crit_next = 0;
+    g_crit_phase = 0;
+    g_crit_attack_at = 0;
+}
+
+void RestoreProjection() {
+    // 投影是缓存值：我们改完游戏不会自己重算，DLL 卸载前必须写回原值，
+    // 否则画面会一直停在放大/广角状态，用户以为渲染坏了。
+    TickProjection(true);
 }
 
 void Tick() {
@@ -847,6 +1050,9 @@ void Tick() {
         input::SetPhysicalWanted(false);   // 面板打开时把钩子摘掉，别让输入多绕一圈
         input::SetPhysicalKeyWanted(false);
         ReleaseAll();
+        // 面板打开期间把视野还原：不然关掉 Zoom 开关后画面还卡在放大状态，
+        // 用户会以为是渲染坏了。这一步跟面板无关，只跟投影基准有关。
+        TickProjection(true);
         return;
     }
     // 只有真正需要"物理按键状态"的模块开着时才挂钩子，其余时间不给输入加任何额外环节
@@ -855,10 +1061,12 @@ void Tick() {
         const int asr = FindFeature(L"AttackSprintReset");
         const int ntd = FindFeature(L"NoThrowDelay");
         const int aim = FindFeature(L"Aimbot");
+        const int crit = FindFeature(L"Criticals");
         const bool need_mouse = (ac >= 0 && cfg::ModuleOn(ac)) ||
                                 (asr >= 0 && cfg::ModuleOn(asr)) ||
                                 (ntd >= 0 && cfg::ModuleOn(ntd)) ||
-                                (aim >= 0 && cfg::ModuleOn(aim));
+                                (aim >= 0 && cfg::ModuleOn(aim)) ||
+                                (crit >= 0 && cfg::ModuleOn(crit));
         input::SetPhysicalWanted(need_mouse);
     }
     {
@@ -867,7 +1075,9 @@ void Tick() {
     }
     TickAutoClicker();
     TickAttackSprintReset();
+    TickCriticals();
     TickAimbot();
+    TickProjection(false);
     TickSprint();
     TickAntiAfk();
     TickAntiAfkRelease();

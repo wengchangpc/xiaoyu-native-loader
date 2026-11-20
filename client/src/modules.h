@@ -18,6 +18,11 @@ void Tick();
 // 立刻松开所有由本模块按下的键/鼠标（面板打开、关闭、退出时调用）
 void ReleaseAll();
 
+// 把被 Zoom / BigFov 改写过的投影矩阵写回游戏原值。
+// 卸载前必须调：投影是**缓存值**，我们改完之后游戏不会自己重算，
+// DLL 一走就没人维持了，画面会一直停在放大/广角状态。
+void RestoreProjection();
+
 // 这个模块名对应的功能是否真的实现了（GUI 自己那一套也算）。
 // 用来在切换模块时提示"还没实现"，免得用户对着空壳开关发懵。
 bool Implemented(const wchar_t* english_name);
