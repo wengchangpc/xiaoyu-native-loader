@@ -623,5 +623,164 @@ void Render() {
     }
 }
 
+// ── 附加渲染：BorderRender / LineRender / ParticleTrail ─────────
+//
+// 这三个都是「只画不读」的纯本地渲染：不碰游戏渲染管线、不改内存、不发包，
+// 只是把已经拿到的世界坐标投到屏幕上再画一遍。反作弊侧完全无感。
+//
+// 为什么要独立入口，不塞进 Render()：
+//   Render() 在 ESP 开关关闭时会提前 return，而这三个功能是各自独立的开关。
+//   塞进去的话「只开 LineRender 不开 ESP」就什么都画不出来。
+//
+// 相机和实体都不重复算：MakeCameraFromGame 每次只读 3 个字段（矩阵/投影/位置），
+// ActorsFromScan 读的是后台扫描器的快照 + 每个实体一次 read，成本跟 ST 一样。
+
+struct TrailPt {
+    sdk::Vec3 p;
+    ULONGLONG t;
+};
+
+const int kTrailMax = 96;
+TrailPt g_trail[kTrailMax];
+int g_trail_head = 0;      // 下一个写入位置
+int g_trail_fill = 0;      // 已填充个数
+ULONGLONG g_trail_last = 0;
+
+// 玩家身后拖尾。采样的是**玩家自己的位置**，每隔 interval 存一个点，
+// 画的时候按年龄衰减透明度 —— 所以 interval 小 = 点密、拖尾长；
+// count 决定每个采样点画几个抖动点（视觉上厚一点）。
+void DrawTrail(int trail_fi, const sdk::Vec3& me_pos, const Camera& cam, int w, int h) {
+    const ULONGLONG now = GetTickCount64();
+    float iv = ParamOf(trail_fi, L"interval", 0.15f);
+    if (iv < 0.05f) iv = 0.05f;
+    if (iv > 2.0f) iv = 2.0f;
+    const ULONGLONG iv_ms = (ULONGLONG)(iv * 1000.0f);
+    if (g_trail_last == 0 || now - g_trail_last >= iv_ms) {
+        g_trail_last = now;
+        g_trail[g_trail_head].p = me_pos;
+        g_trail[g_trail_head].t = now;
+        g_trail_head = (g_trail_head + 1) % kTrailMax;
+        if (g_trail_fill < kTrailMax) ++g_trail_fill;
+    }
+
+    int cnt = (int)ParamOf(trail_fi, L"count", 1.0f);
+    if (cnt < 1) cnt = 1;
+    if (cnt > 20) cnt = 20;
+
+    for (int i = 0; i < g_trail_fill; ++i) {
+        const int idx = (g_trail_head - 1 - i + kTrailMax * 2) % kTrailMax;
+        const TrailPt& tp = g_trail[idx];
+        if (now < tp.t) continue;
+        const ULONGLONG age = now - tp.t;
+        if (age > 6000) break;                 // 更老的都过期了，环里是按时间倒序排的
+        const float a = 1.0f - (float)age / 6000.0f;
+        for (int k = 0; k < cnt; ++k) {
+            // 抖动用固定相位，别用 rand：同一帧内多次调用要稳定，别闪
+            const float ph = (float)((i * 7 + k * 13) % 17) / 17.0f * 6.28318f;
+            const float ox = cosf(ph) * 0.22f;
+            const float oz = sinf(ph) * 0.22f;
+            float sx = 0, sy = 0;
+            if (!Project(cam, tp.p.x + ox, tp.p.y + 0.9f, tp.p.z + oz,
+                         (float)w, (float)h, &sx, &sy)) {
+                continue;
+            }
+            const float rad = 3.0f + 2.0f * a;
+            render::Rect(sx - rad, sy - rad, rad * 2.0f, rad * 2.0f,
+                         render::RgbaF(0.45f, 0.85f, 1.0f, a * 0.55f));
+        }
+    }
+}
+
+void RenderExtras() {
+    const int border_fi = FindFeature(L"BorderRender");
+    const int line_fi = FindFeature(L"LineRender");
+    const int trail_fi = FindFeature(L"ParticleTrail");
+    const bool want_border = (border_fi >= 0) && cfg::ModuleOn(border_fi);
+    const bool want_line = (line_fi >= 0) && cfg::ModuleOn(line_fi);
+    const bool want_trail = (trail_fi >= 0) && cfg::ModuleOn(trail_fi);
+    if (!want_border && !want_line && !want_trail) {
+        // 关掉之后把环清空，下次打开不会拖出一条几秒前的旧轨迹
+        g_trail_fill = 0;
+        g_trail_head = 0;
+        g_trail_last = 0;
+        return;
+    }
+
+    const int w = render::Width();
+    const int h = render::Height();
+    if (w <= 0 || h <= 0) return;
+
+    const uintptr_t lp = sdk::LocalPlayer();
+    if (lp == 0) return;
+
+    Camera cam;
+    if (!MakeCameraFromGame(w, h, &cam)) return;
+
+    sdk::Vec3 me_pos = {0, 0, 0};
+    const bool have_me = mem::Read(lp + sdk::kOffPos, &me_pos, sizeof(me_pos));
+
+    if (want_trail && have_me) DrawTrail(trail_fi, me_pos, cam, w, h);
+
+    if (!want_border && !want_line) return;
+
+    static sdk::ActorEntry actors[512];
+    const int n = ActorsFromScan(actors, 512);
+    if (n <= 0) return;
+
+    const float b_rad = ParamOf(border_fi, L"radius", 48.0f);
+    const float l_rad = ParamOf(line_fi, L"radius", 32.0f);
+    const float l_up = ParamOf(line_fi, L"origin_above", 2.4f);
+
+    // 起点：玩家位置上方 origin_above（原版这个参数是 2.0..3.6，就是身高的量级）
+    float ox0 = 0, oy0 = 0;
+    const bool have_origin = have_me &&
+                             Project(cam, me_pos.x, me_pos.y + l_up, me_pos.z,
+                                     (float)w, (float)h, &ox0, &oy0);
+
+    const D2D1_COLOR_F b_col = render::Rgba(120, 200, 255, 200);
+    const D2D1_COLOR_F l_col = render::RgbaF(1.0f, 0.62f, 0.2f, 0.45f);
+
+    int nb = 0, nl = 0;
+    for (int i = 0; i < n; ++i) {
+        const sdk::ActorEntry& e = actors[i];
+        if (e.actor == lp) continue;
+
+        const float dx = e.pos.x - cam.eye.x;
+        const float dy = e.pos.y - cam.eye.y;
+        const float dz = e.pos.z - cam.eye.z;
+        const float dist = sqrtf(dx * dx + dy * dy + dz * dz);
+
+        // BorderRender：半径内**所有**实体都框（不分玩家/生物），这是它和 ESP 的区别
+        if (want_border && dist <= b_rad) {
+            float x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+            if (BoxOf(cam, e, (float)w, (float)h, &x0, &y0, &x1, &y1)) {
+                if (!(x1 < -64.0f || x0 > (float)w + 64.0f ||
+                      y1 < -64.0f || y0 > (float)h + 64.0f)) {
+                    DrawBox(x0, y0, x1, y1, 1.3f, b_col);
+                    ++nb;
+                }
+            }
+        }
+
+        // LineRender：从头顶拉到半径内每个实体
+        if (want_line && have_origin && dist <= l_rad) {
+            float tx = 0, ty = 0;
+            if (Project(cam, e.pos.x, e.pos.y + 0.9f, e.pos.z,
+                        (float)w, (float)h, &tx, &ty)) {
+                render::Line(ox0, oy0, tx, ty, 1.2f, l_col);
+                ++nl;
+            }
+        }
+    }
+
+    static ULONGLONG last = 0;
+    const ULONGLONG now = GetTickCount64();
+    if (now - last > 5000) {
+        last = now;
+        LogLine("[vis] border=%d/%d line=%d/%d trail=%d actors=%d",
+                nb, (int)b_rad, nl, (int)l_rad, g_trail_fill, n);
+    }
+}
+
 }  // namespace esp
 }  // namespace xiaoyu

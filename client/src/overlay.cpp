@@ -613,6 +613,7 @@ void RenderOnce() {
     // 脚本那一层是给外部调试用的：管道客户端每帧提交一批框/线/字，
     // 于是改投影参数只要重跑脚本，不用重编译 DLL。
     esp::Render();
+    esp::RenderExtras();
     rpc::RenderDrawList();
     gui::OnFrame();
     render::EndFrame();

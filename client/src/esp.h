@@ -21,6 +21,11 @@ namespace esp {
 // 模块没开、或者还没进世界，直接返回。
 void Render();
 
+// BorderRender / LineRender / ParticleTrail 的绘制入口。
+// 和 Render() 分开是因为 ESP 关掉时那三个还得能画 —— Render() 在开关关闭时
+// 会提前 return。三个功能都关的时候这个函数是空转（只清一次拖尾环）。
+void RenderExtras();
+
 // 上一帧实际画出来的玩家数（调试/排障用）
 int LastDrawn();
 

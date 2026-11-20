@@ -166,11 +166,24 @@ ULONGLONG JitterMs(int base_ms, int percent) {
     return (ULONGLONG)v;
 }
 
+// ── 数学小工具 ──────────────────────────────────────────────────
+// 放在这里是因为 SprintReset / Aimbot / KillAura / Projection 都要用，
+// 定义跟着"各模块状态"之前走，避免散落在各自的段落里出现前向引用。
+float Clampf(float v, float lo, float hi) {
+    return v < lo ? lo : (v > hi ? hi : v);
+}
+
+// 归到 (-180, 180]
+float Wrap180(float d) {
+    while (d > 180.0f) d -= 360.0f;
+    while (d <= -180.0f) d += 360.0f;
+    return d;
+}
+
 // 逐字符按 Unicode 注入。中文没法用虚拟键码表示，只能走 KEYEVENTF_UNICODE，
 // 让系统在目标线程里合成 WM_CHAR。基岩版的聊天输入框吃的是 WM_CHAR，
 // 所以这条路能打出中文（用 VkKeyScan 走键盘布局就会被转成问号）。
-void TypeUnicode(const wchar_t* s) {
-    for (const wchar_t* p = s; *p != 0; ++p) {
+void TypeUnicode(const wchar_t* s) {    for (const wchar_t* p = s; *p != 0; ++p) {
         INPUT in[2] = {};
         in[0].type = INPUT_KEYBOARD;
         in[0].ki.wScan = (WORD)*p;
@@ -592,6 +605,154 @@ void TickCriticals() {
     g_crit_next = now + JitterMs(600, 12);
 }
 
+// ── SprintReset ─────────────────────────────────────────────────
+//
+// 击退重置：攻击（或受击）那一刻把疾跑状态清一次，服务端的击退计算会走
+// 「未疾跑」那一档，吃到的击退方向/幅度更可控。
+//
+// ★ 关键：**不能只发 KEYUP**。玩家自己的手指还按着 W，我们发一个松开之后
+//   就再也没有 keydown 了 —— 角色会直接停在原地。那不是帮人，是把人搞坏。
+//   所以必须成对：松开 -> 等 customduration -> 重新按下，且"已松开"这个中间
+//   状态要有保底恢复（ReleaseAll / 模块被关 / 面板打开都会补一次 keydown）。
+//
+// 参数映射：
+//   releasemode : w = 松开 W（双击疾跑那套）；sprint = 松开 Ctrl
+//   timingmode  : smart = 按下沿立即执行；custom = 先等 customdelay
+//   customduration : 松开的持续时间（0 表示同批注入，不留空窗）
+//   cpsenabled/cps : 限制重置频率（连点时不做无意义的重复重置）
+//   distance    : 附近这个距离内没有其他实体就不做，空挥不值得动按键
+bool g_sr_armed = false;
+ULONGLONG g_sr_arm_at = 0;
+int g_sr_phase = 0;          // 0=空闲 1=已松开，等重新按下
+ULONGLONG g_sr_down_at = 0;
+WORD g_sr_vk = 0;
+ULONGLONG g_sr_next = 0;
+bool g_sr_prev_left = false;
+bool g_sr_warned = false;
+
+// 把欠下的 keydown 补上。任何可能中断流程的路径都必须调它。
+void SprintResetRestore() {
+    if (g_sr_phase == 1 && g_sr_vk != 0) {
+        INPUT in = {};
+        in.type = INPUT_KEYBOARD;
+        in.ki.wVk = g_sr_vk;
+        in.ki.wScan = (WORD)MapVirtualKeyW(g_sr_vk, MAPVK_VK_TO_VSC);
+        SendInput(1, &in, sizeof(in));
+    }
+    g_sr_phase = 0;
+    g_sr_vk = 0;
+    g_sr_armed = false;
+}
+
+void SprintResetFire(WORD vk, int hold_ms) {
+    if (hold_ms <= 0) {
+        // 同批注入：游戏会在同一帧里看到「松开 + 按下」，疾跑标志被重置，
+        // 而玩家完全不用重新按键。不留中间状态，最安全。
+        SendKeyUpDown(vk);
+        return;
+    }
+    INPUT up = {};
+    up.type = INPUT_KEYBOARD;
+    up.ki.wVk = vk;
+    up.ki.wScan = (WORD)MapVirtualKeyW(vk, MAPVK_VK_TO_VSC);
+    up.ki.dwFlags = KEYEVENTF_KEYUP;
+    SendInput(1, &up, sizeof(up));
+    g_sr_phase = 1;
+    g_sr_vk = vk;
+    g_sr_down_at = GetTickCount64() + (ULONGLONG)hold_ms;
+}
+
+void TickSprintReset() {
+    const ULONGLONG now = GetTickCount64();
+
+    // 先把上一轮欠下的 keydown 补上（正常路径就是在这里完成的）
+    if (g_sr_phase == 1 && now >= g_sr_down_at) {
+        INPUT in = {};
+        in.type = INPUT_KEYBOARD;
+        in.ki.wVk = g_sr_vk;
+        in.ki.wScan = (WORD)MapVirtualKeyW(g_sr_vk, MAPVK_VK_TO_VSC);
+        SendInput(1, &in, sizeof(in));
+        g_sr_phase = 0;
+        g_sr_vk = 0;
+    }
+
+    const int fi = FindFeature(L"SprintReset");
+    if (!Active(fi)) {
+        SprintResetRestore();
+        g_sr_next = 0;
+        g_sr_prev_left = false;
+        g_sr_warned = false;
+        return;
+    }
+
+    const bool down = input::PhysLeftDown();
+    const bool pressed = down && !g_sr_prev_left;
+    g_sr_prev_left = down;
+
+    // armed：customdelay 的等待期。玩家先松手就取消，别对空处按一下 W
+    if (g_sr_armed) {
+        if (now < g_sr_arm_at) return;
+        g_sr_armed = false;
+        if (!down) return;
+        // 落到下面统一执行
+    } else {
+        if (!pressed) return;
+        if (g_sr_phase == 1) return;      // 还在"松开"窗口里，别叠第二次
+        if (now < g_sr_next) return;
+    }
+
+    // distance：附近没有目标就不做
+    const float need = ParamOf(fi, L"distance", 4.0f);
+    if (need > 0.1f) {
+        uintptr_t list[512];
+        sdk::ActorSetStart();
+        const int n = sdk::ActorSetSnapshot(list, 512);
+        const uintptr_t lp = sdk::LocalPlayer();
+        bool near = false;
+        sdk::Vec3 me = {0, 0, 0};
+        if (lp != 0 && mem::Read(lp + sdk::kOffPos, &me, sizeof(me))) {
+            for (int i = 0; i < n; ++i) {
+                if (list[i] == lp) continue;
+                sdk::Vec3 p;
+                if (!mem::Read(list[i] + sdk::kOffPos, &p, sizeof(p))) continue;
+                const float dx = p.x - me.x;
+                const float dy = p.y - me.y;
+                const float dz = p.z - me.z;
+                if (dx * dx + dy * dy + dz * dz <= need * need) { near = true; break; }
+            }
+        }
+        if (!near) return;
+    }
+
+    // 第一次要执行时才读计时参数，并把 cps 冷却排上
+    if (ParamOf(fi, L"cpsenabled", 0.0f) > 0.5f) {
+        const float cps = Clampf(ParamOf(fi, L"cps", 8.0f), 1.0f, 20.0f);
+        g_sr_next = now + JitterMs((int)(1000.0f / cps), 15);
+    }
+
+    const WORD vk = (ParamOf(fi, L"releasemode", 0.0f) > 0.5f) ? VK_LCONTROL : (WORD)'W';
+
+    // timingmode：custom 要先等 customdelay，用 armed 状态跨 tick 等，不阻塞渲染
+    if (!g_sr_armed && ParamOf(fi, L"timingmode", 0.0f) > 0.5f) {
+        const float dl = Clampf(ParamOf(fi, L"customdelay", 0.05f), 0.0f, 2.0f);
+        if (dl > 0.01f) {
+            g_sr_armed = true;
+            g_sr_arm_at = now + (ULONGLONG)(dl * 1000.0f);
+            return;
+        }
+    }
+
+    const float dur = Clampf(ParamOf(fi, L"customduration", 0.05f), 0.0f, 2.0f);
+    const int hold = (dur < 0.02f) ? 0 : (int)(dur * 1000.0f);
+    SprintResetFire(vk, hold);
+
+    if (!g_sr_warned) {
+        g_sr_warned = true;
+        LogLine("[mod] SprintReset 触发：vk=0x%02X hold=%dms（%s）",
+                (unsigned)vk, hold, hold > 0 ? "两段式，下一 tick 补按下" : "同批注入");
+    }
+}
+
 // ── Aimbot ──────────────────────────────────────────────────────
 //
 // 视角不在 Actor 上：实测 LocalPlayer 前 24KB 里没有任何 float 跟着视角变，
@@ -624,17 +785,6 @@ ULONGLONG g_aim_click_until = 0;
 bool g_aim_warned_weapon = false;
 uintptr_t g_aim_target = 0;
 ULONGLONG g_aim_pick_at = 0;
-
-float Clampf(float v, float lo, float hi) {
-    return v < lo ? lo : (v > hi ? hi : v);
-}
-
-// 归到 (-180, 180]
-float Wrap180(float d) {
-    while (d > 180.0f) d -= 360.0f;
-    while (d <= -180.0f) d += 360.0f;
-    return d;
-}
 
 // 目标相对当前视线的角度差（度）。返回 false = 目标在正上下方、算不出 yaw。
 //
@@ -1216,7 +1366,7 @@ bool Implemented(const wchar_t* english_name) {
     static const wchar_t* kSynth[] = {
         L"AC", L"Sprint", L"AntiAFK", L"AutoFish",
         L"NoJumpDelay", L"NoThrowDelay", L"Spammer", L"Spin", L"AttackSprintReset",
-        L"Criticals",
+        L"Criticals", L"SprintReset",
     };
     for (size_t i = 0; i < sizeof(kSynth) / sizeof(kSynth[0]); ++i) {
         if (wcscmp(kSynth[i], english_name) == 0) return true;
@@ -1230,8 +1380,12 @@ bool Implemented(const wchar_t* english_name) {
     // + Projection + CameraPos，再来回合成鼠标位移。不走 mRot（Actor 上没这个字段）。
     // Zoom / BigFov 只写 ClientInstance+0x520 的 p00/p11（实测写进去不会被覆盖）。
     // KillAura 是 Aimbot 的转向 + 自动点击，判据同样全部来自摄像机链路。
+    // BorderRender / LineRender / ParticleTrail 是纯本地覆盖层绘制：
+    // 相机和实体都走同一条链路，但只画不写，反作弊侧完全无感。
     static const wchar_t* kMemory[] = {L"ESP", L"CoordDisplay", L"Aimbot",
-                                       L"KillAura", L"Zoom", L"BigFov"};
+                                       L"KillAura", L"Zoom", L"BigFov",
+                                       L"BorderRender", L"LineRender",
+                                       L"ParticleTrail"};
     for (size_t i = 0; i < sizeof(kMemory) / sizeof(kMemory[0]); ++i) {
         if (wcscmp(kMemory[i], english_name) == 0) return true;
     }
@@ -1239,6 +1393,9 @@ bool Implemented(const wchar_t* english_name) {
 }
 
 void ReleaseAll() {
+    // SprintReset 可能停在「已松开、还没按下」的中间态：必须先把 keydown 补上，
+    // 否则玩家的 W / Ctrl 会被我们永久松开，角色再也走不动。
+    SprintResetRestore();
     for (int i = g_held_n - 1; i >= 0; --i) {
         UnholdKey(g_held[i]);
     }
@@ -1305,11 +1462,13 @@ void Tick() {
         const int aim = FindFeature(L"Aimbot");
         const int crit = FindFeature(L"Criticals");
         const int ka = FindFeature(L"KillAura");
+        const int sr = FindFeature(L"SprintReset");
         const bool need_mouse = (ac >= 0 && cfg::ModuleOn(ac)) ||
                                 (asr >= 0 && cfg::ModuleOn(asr)) ||
                                 (ntd >= 0 && cfg::ModuleOn(ntd)) ||
                                 (aim >= 0 && cfg::ModuleOn(aim)) ||
                                 (ka >= 0 && cfg::ModuleOn(ka)) ||
+                                (sr >= 0 && cfg::ModuleOn(sr)) ||
                                 (crit >= 0 && cfg::ModuleOn(crit));
         input::SetPhysicalWanted(need_mouse);
     }
@@ -1319,6 +1478,7 @@ void Tick() {
     }
     TickAutoClicker();
     TickAttackSprintReset();
+    TickSprintReset();
     TickCriticals();
     TickAimbot();
     TickKillAura();
