@@ -369,6 +369,10 @@ constexpr uintptr_t kOffMcClientInstanceB = 0x0168;
 // ── ClientInstance 字段 ─────────────────────────────────────────
 constexpr uintptr_t kOffCiLevelRenderer = 0x0138;
 constexpr uintptr_t kOffCiOptions = 0x0CC0;
+// 摄像机三件套（ViewMatrix / Projection / CameraPos），来源见 ReadGameCamera
+constexpr uintptr_t kOffCiViewMatrix = 0x04E0;
+constexpr uintptr_t kOffCiProjection = 0x0520;
+constexpr uintptr_t kOffCiCameraPos = 0x0560;
 
 struct Vec3 {
     float x;
@@ -1328,6 +1332,77 @@ inline uintptr_t ClientInstanceOf(uintptr_t lp) {
     uintptr_t ci = mem::ReadPtr(mc + kOffMcClientInstanceA);
     if (ci == 0) ci = mem::ReadPtr(mc + kOffMcClientInstanceB);
     return ci;
+}
+
+// ── 摄像机（直接读游戏自己的矩阵）────────────────────────────────
+//
+// 2026-11-21 实测，来源是 probe34/35/36 一串差分实验：
+//   * LocalPlayer 前 24KB 里**没有任何字段**跟着视角变（只有 0xD0..0x108
+//     一小段单位向量级的小抖动），说明客户端摄像机不挂在 Actor 上；
+//   * 把 info 里的几个根对象各差分一遍（读 -> look 转视角 -> 再读），
+//     只有 ClientInstance 变了，而且变的是 0x4B0..0x4E0 那一片；
+//   * 0x4E0 是 3x3 旋转，实测 col0 x col1 == col2（右手系），
+//     并且 forward = -col2 与「按住 W 的位移方向」同向（probe33 量的）；
+//   * 0x520 是投影：p00=0.4746 / p11=0.8214，且 p00*1215 == p11*702
+//     == 576.6 —— 两个方向焦距一致，说明是方像素，只需要一个 focal；
+//   * 0x560 是相机位置，和玩家 mPos **完全相等**（说明 mPos 本来就是眼睛
+//     位置），所以用它时不要再加 1.62 的眼高。
+//
+// 有了这条链就不需要 mRot 了：投影用游戏自己的矩阵，FOV、第三人称、
+// 镜头晃动、镜头偏移全都自动一致，比我们自己按 yaw/pitch 拼准得多。
+struct GameCamera {
+    Vec3 eye;
+    float fx, fy, fz;   // forward = -col2
+    float rx, ry, rz;   // right   = col0
+    float ux, uy, uz;   // up      = col1
+    float focal;        // 像素焦距（= h/2 * p11）
+    float p00, p11;
+};
+
+inline bool ReadGameCamera(uintptr_t ci, GameCamera* c) {
+    if (ci == 0 || c == nullptr) return false;
+    float m[9] = {0};
+    if (!mem::Read(ci + kOffCiViewMatrix, m, sizeof(m))) return false;
+    float p00 = 0.0f;
+    float p11 = 0.0f;
+    if (!mem::Read(ci + kOffCiProjection, &p00)) return false;
+    if (!mem::Read(ci + kOffCiProjection + 0x14, &p11)) return false;
+    Vec3 cam;
+    if (!mem::Read(ci + kOffCiCameraPos, &cam, sizeof(cam))) return false;
+
+    // 合理性：3x3 近似正交、投影缩放落在正常范围、位置像世界坐标。
+    // 任何一条不过就当链路失效返回 false，调用方退回 yaw/pitch 版本，
+    // 绝不拿歪矩阵去画 —— 画歪比不画更难判断。
+    const float n0 = m[0] * m[0] + m[3] * m[3] + m[6] * m[6];
+    const float n1 = m[1] * m[1] + m[4] * m[4] + m[7] * m[7];
+    if (n0 < 0.9f || n0 > 1.1f || n1 < 0.9f || n1 > 1.1f) return false;
+    if (p00 < 0.05f || p00 > 20.0f || p11 < 0.05f || p11 > 20.0f) return false;
+    if (!PlausiblePos(cam)) return false;
+
+    c->eye = cam;
+    c->rx = m[0]; c->ry = m[3]; c->rz = m[6];
+    c->ux = m[1]; c->uy = m[4]; c->uz = m[7];
+    c->fx = -m[2]; c->fy = -m[5]; c->fz = -m[8];
+    c->p00 = p00;
+    c->p11 = p11;
+    c->focal = 0.0f;    // 由调用方按 h 算：(h*0.5)*p11
+    return true;
+}
+
+// 世界点 -> 屏幕。返回 false = 在相机后面/太近。
+inline bool GameProject(const GameCamera& c, const Vec3& p, float w, float h,
+                        float* sx, float* sy) {
+    const float dx = p.x - c.eye.x;
+    const float dy = p.y - c.eye.y;
+    const float dz = p.z - c.eye.z;
+    const float cz = dx * c.fx + dy * c.fy + dz * c.fz;   // 前向深度
+    if (cz < 0.08f) return false;
+    const float cx = dx * c.rx + dy * c.ry + dz * c.rz;
+    const float cy = dx * c.ux + dy * c.uy + dz * c.uz;
+    const float focal = (h * 0.5f) * c.p11;
+    *sx = w * 0.5f + cx * focal / cz;
+    *sy = h * 0.5f - cy * focal / cz;
+    return true;
 }
 
 // 游戏设置对象。FOV / 视角 / 灵敏度都在里面 —— 目前还没定位到具体字段，

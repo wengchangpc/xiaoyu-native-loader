@@ -180,6 +180,54 @@ void MakeCamera(const sdk::ActorEntry& me, int w, int h, Camera* c) {
     (void)w;
 }
 
+// 优先用游戏自己的摄像机矩阵（见 sdk.h ReadGameCamera 的注释：0x4E0 旋转、
+// 0x520 投影、0x560 相机位置）。
+//
+// 为什么必须换：老路径要从 Actor 的 rotation 段拿 yaw/pitch 再自己拼相机，
+// 而 probe34 实测这个 build 上 Actor 前 24KB 里根本没有跟着视角变的字段，
+// 老路径拿到的是 0 —— 拼出来的相机永远是朝 +z 的，画出来必然全错。
+// 用游戏矩阵还有个额外好处：FOV、第三人称、镜头晃动、摔伤抖动全都自动一致。
+bool MakeCameraFromGame(int w, int h, Camera* c) {
+    const uintptr_t lp = sdk::LocalPlayer();
+    if (lp == 0) return false;
+    const uintptr_t ci = sdk::ClientInstanceOf(lp);
+    if (ci == 0) return false;
+    sdk::GameCamera gc;
+    if (!sdk::ReadGameCamera(ci, &gc)) return false;
+    c->eye = gc.eye;
+    c->fx = gc.fx; c->fy = gc.fy; c->fz = gc.fz;
+    c->rx = gc.rx; c->ry = gc.ry; c->rz = gc.rz;
+    c->ux = gc.ux; c->uy = gc.uy; c->uz = gc.uz;
+    c->focal = ((float)h * 0.5f) * gc.p11;
+    (void)w;
+    return true;
+}
+
+// 扫描兜底：ECS 链路在这个 build 上失效（见 sdk.h ScanActors 上面那段），
+// 实体列表由后台扫描线程维护，这里只取快照 + 每帧现读坐标。
+// 所以「谁是实体」最多滞后 1.5 秒，坐标永远是当前值。
+int ActorsFromScan(sdk::ActorEntry* out, int max) {
+    static uintptr_t addrs[512];
+    sdk::ActorSetStart();
+    const int n = sdk::ActorSetSnapshot(addrs, 512);
+    int got = 0;
+    for (int i = 0; i < n && got < max; ++i) {
+        if (addrs[i] == 0) continue;
+        sdk::ActorEntry e;
+        e.actor = addrs[i];
+        e.entity_id = 0;
+        e.pitch = 0.0f;
+        e.yaw = 0.0f;
+        e.bb_min.x = 0.0f; e.bb_min.y = 0.0f; e.bb_min.z = 0.0f;
+        e.bb_max.x = 0.0f; e.bb_max.y = 0.0f; e.bb_max.z = 0.0f;
+        e.has_bb = false;
+        if (!mem::Read(e.actor + sdk::kOffPos, &e.pos, sizeof(e.pos))) continue;
+        if (!sdk::PlausibleActorPos(e.pos)) continue;
+        out[got++] = e;
+    }
+    return got;
+}
+
 // 世界点 -> 屏幕点。返回 false 表示在摄像机后面或者太近，不要画。
 bool Project(const Camera& c, float x, float y, float z, float w, float h,
              float* sx, float* sy) {
@@ -428,11 +476,15 @@ void Render() {
     }
 
     static sdk::ActorEntry actors[512];
-    const int n = sdk::EnumActors(actors, 512, lp);
+    int n = sdk::EnumActors(actors, 512, lp);
+    if (n == 0) {
+        // ECS 链路失效时（本 build 就是这种情况）走后台扫描器的快照
+        n = ActorsFromScan(actors, 512);
+    }
     g_last_actors = n;
     if (n == 0) {
         g_last_drawn = 0;
-        Why("实体表是空的（ActorManager 链路可能变了）");
+        Why("实体列表是空的（ECS 链路失效，扫描器也还没出结果）");
         return;
     }
 
@@ -452,7 +504,10 @@ void Render() {
     if (w <= 0 || h <= 0) return;
 
     Camera cam;
-    MakeCamera(*me, w, h, &cam);
+    if (!MakeCameraFromGame(w, h, &cam)) {
+        // 读不到游戏矩阵才退回 yaw/pitch 版本（本 build 上这个分支大概率出不来）
+        MakeCamera(*me, w, h, &cam);
+    }
 
     // ── 样式参数 ──
     const float max_dist = ParamOf(fi, L"scan_radius", 64.0f);

@@ -640,6 +640,57 @@ void CmdKey(HANDLE h, char** ctx) {
     SendOk(h, msg, (int)strlen(msg));
 }
 
+// projtest —— 用游戏的摄像机矩阵把实体投到屏幕，验证投影方向对不对。
+//
+// 为什么需要单独一个命令：ESP 画得对不对在屏幕上才能看出来，但截图这条路
+// 已经废了（BitBlt 抓回来两张像素完全一样，游戏画面在硬件叠加层上）。
+// 所以改成数值验证：转一下视角，看同一个实体在屏幕上的 x 往哪边移动 ——
+// 向右转视角，物体应该往左移（Δsx < 0）。符号反了就是 right 向量取反了。
+//
+// 输出：
+//   cam eye=.. fwd=.. p11=.. focal=..
+//   0x<addr> <cls> d=.. behind=0/1 sx=.. sy=..
+void CmdProjTest(HANDLE h, char** ctx) {
+    (void)ctx;
+    const uintptr_t lp = sdk::LocalPlayer();
+    if (lp == 0) { SendErr(h, "LocalPlayer=0"); return; }
+    const uintptr_t ci = sdk::ClientInstanceOf(lp);
+    sdk::GameCamera gc;
+    if (!sdk::ReadGameCamera(ci, &gc)) {
+        SendErr(h, "读不到摄像机矩阵（链路或偏移不对）");
+        return;
+    }
+    const int w = 1215;
+    const int hh = 702;
+
+    std::string s;
+    char line[320];
+    sprintf_s(line, "cam eye=%.2f,%.2f,%.2f fwd=%.3f,%.3f,%.3f up=%.3f,%.3f,%.3f p00=%.4f p11=%.4f\n",
+              gc.eye.x, gc.eye.y, gc.eye.z, gc.fx, gc.fy, gc.fz,
+              gc.ux, gc.uy, gc.uz, gc.p00, gc.p11);
+    s += line;
+
+    static uintptr_t addrs[512];
+    sdk::ActorSetStart();
+    const int n = sdk::ActorSetSnapshot(addrs, 512);
+    sprintf_s(line, "actors=%d\n", n);
+    s += line;
+    for (int i = 0; i < n; ++i) {
+        sdk::Vec3 p;
+        if (!mem::Read(addrs[i] + sdk::kOffPos, &p, sizeof(p))) continue;
+        float sx = 0.0f, sy = 0.0f;
+        const bool vis = sdk::GameProject(gc, p, (float)w, (float)hh, &sx, &sy);
+        const float dx = p.x - gc.eye.x, dy = p.y - gc.eye.y, dz = p.z - gc.eye.z;
+        const float d = sqrtf(dx * dx + dy * dy + dz * dz);
+        const char* cls = sdk::ClassNameOf(addrs[i]);
+        sprintf_s(line, "0x%llX %s d=%.1f behind=%d sx=%.1f sy=%.1f %s\n",
+                  (unsigned long long)addrs[i], cls != nullptr ? cls : "?",
+                  d, vis ? 0 : 1, sx, sy, addrs[i] == lp ? "SELF" : "");
+        s += line;
+    }
+    SendOk(h, s.data(), (int)s.size());
+}
+
 void CmdRead(HANDLE h, char** ctx) {
     char* a = NextTok(ctx);
     char* b = NextTok(ctx);
@@ -956,6 +1007,8 @@ bool Serve(HANDLE h) {
             CmdShot(h, &ctx);
         } else if (strcmp(cmd, "key") == 0) {
             CmdKey(h, &ctx);
+        } else if (strcmp(cmd, "projtest") == 0) {
+            CmdProjTest(h, &ctx);
         } else if (strcmp(cmd, "write") == 0) {
             CmdWrite(h, &ctx);
         } else if (strcmp(cmd, "draw") == 0) {
@@ -974,7 +1027,7 @@ bool Serve(HANDLE h) {
             CmdUnload(h, &ctx);
             return false;
         } else {
-            SendErr(h, "未知命令（ping/info/actors/scanfov/read/scan/scanactor/scanbench/actorlist/look/focus/lclick/shot/key/who/write/draw/esp/fov/eye/runpy/inject/unload）");
+            SendErr(h, "未知命令（ping/info/actors/scanfov/read/scan/scanactor/scanbench/actorlist/look/focus/lclick/shot/key/projtest/who/write/draw/esp/fov/eye/runpy/inject/unload）");
         }
     }
 }
