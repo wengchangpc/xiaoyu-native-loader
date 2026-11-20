@@ -371,6 +371,35 @@ void CmdScanBench(HANDLE h, char** ctx) {
     SendOk(h, line, (int)strlen(line));
 }
 
+// look <dx> <dy> —— 合成一次相对鼠标位移，用来做「视角差分探针」。
+//
+// 目的：找 Actor 里的 mRot（yaw/pitch）。静态扫一遍是找不到的 ——
+// 实测 lp+0xCF8 起全是 0，整个对象里也没有 4 对连续的角度浮点。
+// 差分就绕开布局猜测：读一段内存 -> 转视角 -> 再读，变动的 float 对就是它。
+// 必须真的移动鼠标（游戏自己把 mRot 从输入增量积分出来，我们没法直接写）。
+void CmdLook(HANDLE h, char** ctx) {
+    char* a = NextTok(ctx);
+    char* b = NextTok(ctx);
+    if (a == nullptr) { SendErr(h, "look <dx> <dy>"); return; }
+    int dx = atoi(a);
+    int dy = (b != nullptr) ? atoi(b) : 0;
+    if (dx > 3000) dx = 3000;
+    if (dx < -3000) dx = -3000;
+    if (dy > 3000) dy = 3000;
+    if (dy < -3000) dy = -3000;
+
+    INPUT in = {};
+    in.type = INPUT_MOUSE;
+    in.mi.dx = (LONG)dx;
+    in.mi.dy = (LONG)dy;
+    in.mi.dwFlags = MOUSEEVENTF_MOVE;
+    const UINT sent = SendInput(1, &in, sizeof(in));
+
+    char msg[96];
+    sprintf_s(msg, "look dx=%d dy=%d sent=%u err=%lu\n", dx, dy, sent, GetLastError());
+    SendOk(h, msg, (int)strlen(msg));
+}
+
 void CmdRead(HANDLE h, char** ctx) {
     char* a = NextTok(ctx);
     char* b = NextTok(ctx);
@@ -675,6 +704,8 @@ bool Serve(HANDLE h) {
             CmdScanActors(h, &ctx);
         } else if (strcmp(cmd, "scanbench") == 0) {
             CmdScanBench(h, &ctx);
+        } else if (strcmp(cmd, "look") == 0) {
+            CmdLook(h, &ctx);
         } else if (strcmp(cmd, "write") == 0) {
             CmdWrite(h, &ctx);
         } else if (strcmp(cmd, "draw") == 0) {
@@ -693,7 +724,7 @@ bool Serve(HANDLE h) {
             CmdUnload(h, &ctx);
             return false;
         } else {
-            SendErr(h, "未知命令（ping/info/actors/scanfov/read/scan/scanactor/scanbench/who/write/draw/esp/fov/eye/runpy/inject/unload）");
+            SendErr(h, "未知命令（ping/info/actors/scanfov/read/scan/scanactor/scanbench/look/who/write/draw/esp/fov/eye/runpy/inject/unload）");
         }
     }
 }
