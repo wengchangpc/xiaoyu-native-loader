@@ -282,6 +282,49 @@ void CmdWho(HANDLE h, char** ctx) {
     SendOk(h, s.data(), (int)s.size());
 }
 
+// scanactor [max] —— 谓词扫堆，找所有「像实体」的对象。
+//
+// 判据是 sdk::ScanActors 里那两条（首字是主模块 vtable + +0xCE0 是合理坐标）。
+// 这是 ECS 链失效时的兜底路径：本 build 上 ActorManager 内部偏移全变了，
+// 沿着 EntityRegistry -> EntityContext 的页表再挖一跳的成本远高于直接扫。
+//
+// 输出一行一个，纯 ASCII，方便脚本 split：
+//   0x<addr> <ClassName> vt_rva=0x<RVA> pos=x,y,z [SELF]
+void CmdScanActors(HANDLE h, char** ctx) {
+    int cap = 512;
+    if (char* a = NextTok(ctx)) cap = (int)strtol(a, nullptr, 10);
+    if (cap < 1) cap = 1;
+    if (cap > 1024) cap = 1024;
+
+    static uintptr_t objs[1024];
+    size_t scanned = 0;
+    const uint64_t t0 = GetTickCount64();
+    const int n = sdk::ScanActors(objs, cap, &scanned, t0 + 60000);
+    const uint64_t ms = GetTickCount64() - t0;
+
+    std::string s;
+    char line[256];
+    sprintf_s(line, "scanned=0x%llX count=%d ms=%llu\n",
+              (unsigned long long)scanned, n, (unsigned long long)ms);
+    s += line;
+
+    const uintptr_t base = mem::Base();
+    const uintptr_t lp = sdk::LocalPlayer();
+    for (int i = 0; i < n; ++i) {
+        sdk::Vec3 p;
+        if (!mem::Read(objs[i] + sdk::kOffPos, &p, sizeof(p))) continue;
+        const char* cls = sdk::ClassNameOf(objs[i]);
+        const uintptr_t vt = mem::ReadPtr(objs[i]);
+        sprintf_s(line, "0x%llX %s vt_rva=0x%llX pos=%.2f,%.2f,%.2f%s\n",
+                  (unsigned long long)objs[i], cls != nullptr ? cls : "?",
+                  (unsigned long long)(vt - base),
+                  p.x, p.y, p.z,
+                  objs[i] == lp ? " SELF" : "");
+        s += line;
+    }
+    SendOk(h, s.data(), (int)s.size());
+}
+
 void CmdRead(HANDLE h, char** ctx) {
     char* a = NextTok(ctx);
     char* b = NextTok(ctx);
@@ -582,6 +625,8 @@ bool Serve(HANDLE h) {
             CmdScan(h, &ctx);
         } else if (strcmp(cmd, "who") == 0) {
             CmdWho(h, &ctx);
+        } else if (strcmp(cmd, "scanactor") == 0) {
+            CmdScanActors(h, &ctx);
         } else if (strcmp(cmd, "write") == 0) {
             CmdWrite(h, &ctx);
         } else if (strcmp(cmd, "draw") == 0) {
@@ -600,7 +645,7 @@ bool Serve(HANDLE h) {
             CmdUnload(h, &ctx);
             return false;
         } else {
-            SendErr(h, "未知命令（ping/info/actors/scanfov/read/scan/who/write/draw/esp/fov/eye/runpy/inject/unload）");
+            SendErr(h, "未知命令（ping/info/actors/scanfov/read/scan/scanactor/who/write/draw/esp/fov/eye/runpy/inject/unload）");
         }
     }
 }

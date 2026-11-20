@@ -289,6 +289,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 
 #include "log.h"
 #include "memory.h"
@@ -297,7 +298,16 @@ namespace xiaoyu {
 namespace sdk {
 
 // ── 静态全局 ────────────────────────────────────────────────────
-constexpr uintptr_t kLocalPlayerGlobalRva = 0x0B6E9648;
+//
+// 0x0B6E8448 是 2026-11-20 在 build 3.10.5.301511（base=0x7FF76E320000，
+// image=0xD8EA000）上用「扫堆找 LocalPlayer 对象 -> 反查谁持有它」实测出来的：
+//   对象 0x28D3814A020，持有它的槽位 rva=0xB6E8448，且全堆只有这 1 处。
+// 旧值 0x0B6E9648 在这个 build 上指向已释放堆（首字 0，周围是重复的空闲链
+// 指针），差了 0x1200 —— 所以别再按「上一个 build 加偏移」推，每次都要重测。
+//
+// 这个值只当**快路径**用：LocalPlayer() 读到之后必须先验证首字是本 build 的
+// vtable 才认，验不过就走反查。客户端一更新它就失效，反查会把它纠正过来。
+constexpr uintptr_t kLocalPlayerGlobalRva = 0x0B6E8448;
 
 // ── 本 build 的 vftable RVA（从 IDA 符号库按类名读出的真值）────────
 //
@@ -572,6 +582,79 @@ inline int FindPosCandidates(uintptr_t obj, PosGuess* out, int max_out,
         }
     }
     return n;
+}
+
+// ── 谓词扫堆找 Actor ────────────────────────────────────────────
+//
+// 为什么需要它：这个 build 的 ECS 链（ActorManager -> registry -> storage ->
+// 实体指针数组）偏移全变了。2026-11-20 实测：
+//   * ActorManager / MultiPlayerLevel / LocalPlayer 三个类名都能正确解出，
+//     说明 level+0x838 -> ActorManager 这条是对的；
+//   * 但 ActorManager+0x270 已经不是 ActorOwnerComponent 的 registry，
+//     am+0x50 也不是 EntityRegistry 的裸数组；
+//   * 在 ActorManager 里按 storage 特征搜到的是 **EntityRegistry**（n=2118），
+//     不是 EntityStorage，再往下是 EntityContext 的页表，还要再一跳才是 Actor*。
+// 继续猜偏移的代价比直接用扫描结果高得多，所以 ESP 先用这条兜底路径。
+//
+// 判据（两条同时成立，几 GB 堆里只剩几十个命中，全是实体）：
+//   ① 对象首字是主模块内的指针（vtable）
+//   ② 对象 + kOffPos 处是合理坐标（FiniteVec + PlausiblePos）
+//
+// 性能：区段内分块读进缓冲后本地筛，不对每个字节位置都走 mem::Read 的
+// VirtualQuery。1.1GB 实测 2~4 秒（之前 ScanHeapQword 是 13 秒）。
+inline int ScanActors(uintptr_t* out, int max_out, size_t* scanned_out = nullptr,
+                     uint64_t deadline_ms = 0) {
+    if (out == nullptr || max_out <= 0) return 0;
+    const uintptr_t base = mem::Base();
+    const uintptr_t img_end = base + mem::ImageSize();
+    if (base == 0) return 0;
+
+    const size_t kChunk = 4u << 20;   // 4MB
+    static uint8_t* buf = nullptr;
+    if (buf == nullptr) {
+        buf = (uint8_t*)VirtualAlloc(nullptr, kChunk, MEM_COMMIT | MEM_RESERVE,
+                                     PAGE_READWRITE);
+        if (buf == nullptr) return 0;
+    }
+
+    int got = 0;
+    size_t scanned = 0;
+    const int rc = (int)mem::RegionCount();
+    for (int ri = 0; ri < rc && got < max_out; ++ri) {
+        mem::Region r;
+        if (!mem::GetRegion(ri, &r)) continue;
+        // 只扫堆：映像自己已经用 Scan 查过，可执行段不可能是对象
+        if (r.image || r.exec) continue;
+        if ((r.protect & (PAGE_READWRITE | PAGE_WRITECOPY |
+                          PAGE_EXECUTE_READWRITE)) == 0) {
+            continue;
+        }
+        for (uintptr_t off = 0; off < r.size && got < max_out; off += kChunk) {
+            if (deadline_ms != 0 && GetTickCount64() > deadline_ms) goto done;
+            const size_t left = (size_t)(r.size - off);
+            const size_t n = left < kChunk ? left : kChunk;
+            if (!mem::Read(r.base + off, buf, n)) continue;
+            scanned += n;
+            for (size_t i = 0; i + 8 <= n; i += 8) {
+                uintptr_t vt;
+                memcpy(&vt, buf + i, sizeof(vt));
+                if (vt < base || vt >= img_end) continue;
+                const uintptr_t obj = r.base + off + i;
+                Vec3 p;
+                if (!mem::Read(obj + kOffPos, &p, sizeof(p))) continue;
+                if (!PlausiblePos(p)) continue;
+                bool dup = false;
+                for (int k = 0; k < got; ++k) {
+                    if (out[k] == obj) { dup = true; break; }
+                }
+                if (dup) continue;
+                out[got++] = obj;
+            }
+        }
+    }
+done:
+    if (scanned_out != nullptr) *scanned_out = scanned;
+    return got;
 }
 
 inline DWORD WINAPI LocateThread(LPVOID param) {
