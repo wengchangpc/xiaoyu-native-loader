@@ -753,6 +753,38 @@ void TickSprintReset() {
     }
 }
 
+// ── NoBreakDelay ────────────────────────────────────────────────
+//
+// 游戏对「连续挖掘」有一个 tick 级重启延迟：同一目标挖碎后，要继续挖下一个
+// 得等一小段。周期性把左键松开再按下能绕开它。
+//
+// ★ 只能用 SendMouseUpDown 同批注入。单独发 UP 会把玩家真正的按住状态打断，
+//   而玩家手指还按着、系统不会再产生 keydown —— 结果就是他按住不放却挖不动了。
+//
+// 参数：
+//   restart_tick       : 重按窗口，1 tick = 50ms
+//   aim_confirm_ticks  : 每个重按周期跨几个 tick（越大越省，但绕延迟的效果越弱）
+ULONGLONG g_nbd_next = 0;
+
+void TickNoBreakDelay() {
+    const int fi = FindFeature(L"NoBreakDelay");
+    if (!Active(fi)) { g_nbd_next = 0; return; }
+    if (!input::PhysLeftDown()) { g_nbd_next = 0; return; }
+
+    const ULONGLONG now = GetTickCount64();
+    if (g_nbd_next == 0) { g_nbd_next = now + 60; return; }
+    if (now < g_nbd_next) return;
+
+    int rt = (int)Clampf(ParamOf(fi, L"restart_tick", 1.0f), 0.0f, 5.0f);
+    if (rt < 1) rt = 1;
+    int ac = (int)Clampf(ParamOf(fi, L"aim_confirm_ticks", 1.0f), 1.0f, 6.0f);
+
+    SendMouseUpDown(MOUSEEVENTF_LEFTUP, MOUSEEVENTF_LEFTDOWN);
+
+    const int cycle = rt * 50 * ac;
+    g_nbd_next = now + JitterMs(cycle < 40 ? 40 : cycle, 12);
+}
+
 // ── Aimbot ──────────────────────────────────────────────────────
 //
 // 视角不在 Actor 上：实测 LocalPlayer 前 24KB 里没有任何 float 跟着视角变，
@@ -1366,7 +1398,7 @@ bool Implemented(const wchar_t* english_name) {
     static const wchar_t* kSynth[] = {
         L"AC", L"Sprint", L"AntiAFK", L"AutoFish",
         L"NoJumpDelay", L"NoThrowDelay", L"Spammer", L"Spin", L"AttackSprintReset",
-        L"Criticals", L"SprintReset",
+        L"Criticals", L"SprintReset", L"NoBreakDelay",
     };
     for (size_t i = 0; i < sizeof(kSynth) / sizeof(kSynth[0]); ++i) {
         if (wcscmp(kSynth[i], english_name) == 0) return true;
@@ -1429,6 +1461,7 @@ void ReleaseAll() {
     g_ka_frac_x = 0.0f;
     g_ka_frac_y = 0.0f;
     g_ka_rr = 0;
+    g_nbd_next = 0;
 }
 
 void RestoreProjection() {
@@ -1463,12 +1496,14 @@ void Tick() {
         const int crit = FindFeature(L"Criticals");
         const int ka = FindFeature(L"KillAura");
         const int sr = FindFeature(L"SprintReset");
+        const int nbd = FindFeature(L"NoBreakDelay");
         const bool need_mouse = (ac >= 0 && cfg::ModuleOn(ac)) ||
                                 (asr >= 0 && cfg::ModuleOn(asr)) ||
                                 (ntd >= 0 && cfg::ModuleOn(ntd)) ||
                                 (aim >= 0 && cfg::ModuleOn(aim)) ||
                                 (ka >= 0 && cfg::ModuleOn(ka)) ||
                                 (sr >= 0 && cfg::ModuleOn(sr)) ||
+                                (nbd >= 0 && cfg::ModuleOn(nbd)) ||
                                 (crit >= 0 && cfg::ModuleOn(crit));
         input::SetPhysicalWanted(need_mouse);
     }
@@ -1479,6 +1514,7 @@ void Tick() {
     TickAutoClicker();
     TickAttackSprintReset();
     TickSprintReset();
+    TickNoBreakDelay();
     TickCriticals();
     TickAimbot();
     TickKillAura();

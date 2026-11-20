@@ -26,7 +26,35 @@ jobs:
 
       - name: Build (Release)
         working-directory: client
-        run: cmake --build build --config Release --parallel
+        shell: pwsh
+        run: |
+          cmake --build build --config Release --parallel 2>&1 | Tee-Object -FilePath build_log.txt
+          # 显式把 cmake 的退出码透出去：管道接上 Tee-Object 之后，
+          # PowerShell 的失败判定不一定还能拿到原生命令的 $LASTEXITCODE，
+          # 不加这一行会出现"编译失败但步骤显示成功"。
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      # 编译失败时把日志当 release 附件传上去。
+      # 为什么要这么做：这个仓库没有能匿名读 Actions API 的通道，
+      # 构建一失败就只剩"产物没变"这一个现象，看不到到底哪一行报错。
+      # 日志走 release 就能匿名下载：
+      #   releases/download/ci-log/build_log.txt
+      - name: Publish build log on failure
+        if: failure()
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ci-log
+          name: "CI build log (last failure)"
+          body: |
+            最近一次构建失败的日志。
+            commit: ${{ github.sha }}
+            run: ${{ github.run_number }}
+          files: client/build_log.txt
+          fail_on_unmatched_files: false
+          prerelease: true
+          make_latest: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Inspect output
         working-directory: client
