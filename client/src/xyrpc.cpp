@@ -306,8 +306,10 @@ void CmdScanActors(HANDLE h, char** ctx) {
     sdk::Vec3 ref;
     const bool have_ref = (lp != 0) && mem::Read(lp + sdk::kOffPos, &ref, sizeof(ref));
 
+    // 60 秒不够：实测扫到 60 秒被时限截断时只走了 490MB（全量 1.2GB），
+    // LocalPlayer 所在的区段还没轮到，结果连自己都没扫到。给 180 秒。
     const uint64_t t0 = GetTickCount64();
-    const int n = sdk::ScanActors(objs, cap, &scanned, t0 + 60000,
+    const int n = sdk::ScanActors(objs, cap, &scanned, t0 + 180000,
                                   have_ref ? &ref : nullptr);
     const uint64_t ms = GetTickCount64() - t0;
 

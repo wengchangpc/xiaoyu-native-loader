@@ -614,26 +614,34 @@ inline bool PlausibleActorPos(const Vec3& v) {
 //   vtable-8      -> RTTICompleteObjectLocator
 //   COL+16        -> RTTIClassHierarchyDescriptor
 //   CHD+8 numBaseClasses, CHD+12 pBaseClassArray
-//   BaseClassArray[i] -> TypeDescriptor, 名字在 +16
-// 第一个是自己，后面是各级基类。链里出现 Actor / Player / Mob / Entity
-// 就是实体。
-inline bool NameHasCI(const char* s, const char* key) {
-    if (s == nullptr || key == nullptr || *key == 0) return false;
-    for (const char* p = s; *p != '\0'; ++p) {
-        const char* a = p;
-        const char* b = key;
-        while (*a != '\0' && *b != '\0') {
-            char ca = *a;
-            char cb = *b;
-            if (ca >= 'A' && ca <= 'Z') ca = (char)(ca - 'A' + 'a');
-            if (cb >= 'A' && cb <= 'Z') cb = (char)(cb - 'A' + 'a');
-            if (ca != cb) break;
-            ++a;
-            ++b;
-        }
-        if (*b == '\0') return true;
+//   BaseClassArray[i] -> RTTIBaseClassDescriptor (BCD)
+//   BCD+0             -> TypeDescriptor RVA，名字在 +16
+// 第一个是自己，后面是各级基类。链里精确出现 Actor 就是实体。
+//
+// ★ 必须**精确匹配类名**，不能用子串。踩过一次：用 NameHasCI(nm, "Entity")
+//   时，模板类的修饰名 `.?AV?$_Ref_count_obj2@VEntityRegistry@@@std@@` 里
+//   含 "EntityRegistry"，于是 143 个引用计数对象全被判成实体。
+inline const char* MangledClassName(const char* nm) {
+    if (nm == nullptr) return "";
+    const char* p = nm;
+    if (p[0] == '.' && p[1] == '?' && p[2] == 'A') p += 3;
+    if (*p == 'V' || *p == 'U' || *p == 'W') ++p;   // V=class U=struct W=enum
+    return p;
+}
+
+// 修饰名里的类名是否**正好**等于 key（大小写不敏感，到 '@' 结束）。
+// 模板类和内部名（以 ? 或 $ 开头）一律不匹配。
+inline bool ClassNameIs(const char* nm, const char* key) {
+    const char* p = MangledClassName(nm);
+    if (*p == '\0' || *p == '?' || *p == '$') return false;
+    for (const char* k = key; *k != '\0'; ++k, ++p) {
+        char c = *p;
+        if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+        char d = *k;
+        if (d >= 'A' && d <= 'Z') d = (char)(d - 'A' + 'a');
+        if (c != d) return false;
     }
-    return false;
+    return *p == '@' || *p == '\0';
 }
 
 // 按 vtable 缓存结论 —— 512 个候选通常只有几个不同 vtable，
@@ -643,7 +651,7 @@ inline bool IsActorVtable(uintptr_t vt) {
         uintptr_t vt;
         bool ok;
     };
-    static Slot s_cache[64];
+    static Slot s_cache[96];
     static int s_used = 0;
 
     for (int i = 0; i < s_used; ++i) {
@@ -659,14 +667,12 @@ inline bool IsActorVtable(uintptr_t vt) {
             uint32_t chd_rva = 0;
             if (mem::Read(col + 12, &self_td) && mem::Read(col + 16, &chd_rva) &&
                 chd_rva != 0) {
-                // 快速路径：自己的类名就带关键词（LocalPlayer / Player /
-                // PlayerSnapshot ...）。真正需要走继承链的是 Zombie、Cow
-                // 这种，它们自己的名字里什么线索都没有。
+                // 快速路径：自己的类名就叫 Player / LocalPlayer 的直接通过
                 char own[96] = {0};
                 if (self_td != 0 &&
                     mem::Read(base + self_td + 16, own, sizeof(own) - 1)) {
-                    if (NameHasCI(own, "Actor") || NameHasCI(own, "Player") ||
-                        NameHasCI(own, "Mob") || NameHasCI(own, "Entity")) {
+                    if (ClassNameIs(own, "Player") ||
+                        ClassNameIs(own, "LocalPlayer")) {
                         ok = true;
                     }
                 }
@@ -693,10 +699,9 @@ inline bool IsActorVtable(uintptr_t vt) {
                         if (!mem::Read(base + bcd_rva, &td_rva) || td_rva == 0) continue;
                         char nm[96] = {0};
                         if (!mem::Read(base + td_rva + 16, nm, sizeof(nm) - 1)) continue;
-                        if (NameHasCI(nm, "Actor") || NameHasCI(nm, "Player") ||
-                            NameHasCI(nm, "Mob") || NameHasCI(nm, "Entity")) {
-                            ok = true;
-                        }
+                        // Actor 是所有实体的根，链里精确出现它就够了。
+                        // 不用再匹配 Mob/Entity —— Entity 这个关键词误伤太大。
+                        if (ClassNameIs(nm, "Actor")) ok = true;
                     }
                 }
             }
