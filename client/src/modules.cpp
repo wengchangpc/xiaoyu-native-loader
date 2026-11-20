@@ -636,6 +636,56 @@ float Wrap180(float d) {
     return d;
 }
 
+// 目标相对当前视线的角度差（度）。返回 false = 目标在正上下方、算不出 yaw。
+//
+// forward 约定（和 probe33 用「按住 W 的位移方向」量到的一致）：
+//   forward = (-sin(yaw), -sin(pitch), cos(yaw))
+//   yaw   = atan2(-fx, fz)        向右转 yaw 增大
+//   pitch = -asin(fy)             向下看 pitch 增大（MC 约定）
+bool AimDelta(const sdk::GameCamera& cam, const sdk::Vec3& tgt,
+              float* d_yaw, float* d_pitch) {
+    const float dx = tgt.x - cam.eye.x;
+    const float dy = tgt.y - cam.eye.y;
+    const float dz = tgt.z - cam.eye.z;
+    const float horiz = sqrtf(dx * dx + dz * dz);
+    if (horiz < 1e-3f) return false;
+
+    const float yaw_cur = atan2f(-cam.fx, cam.fz) * 57.29578f;
+    const float yaw_tgt = atan2f(-dx, dz) * 57.29578f;
+    *d_yaw = Wrap180(yaw_tgt - yaw_cur);
+
+    const float pitch_cur = -asinf(Clampf(cam.fy, -1.0f, 1.0f)) * 57.29578f;
+    const float pitch_tgt = -atan2f(dy, horiz) * 57.29578f;
+    *d_pitch = pitch_tgt - pitch_cur;
+    return true;
+}
+
+// 把角度差按步长发成鼠标位移。frac 是跨 tick 的亚计数余量 ——
+// 不累积的话每 tick 都因取整丢一点，60Hz 下累积误差肉眼可见。
+void ApplyAimDelta(float d_yaw, float d_pitch, float step_x, float step_y,
+                   bool dynamic_mode, float* frac_x, float* frac_y) {
+    float mv_yaw = dynamic_mode ? (d_yaw * 0.45f) : d_yaw;
+    float mv_pitch = dynamic_mode ? (d_pitch * 0.45f) : d_pitch;
+    mv_yaw = Clampf(mv_yaw, -step_x, step_x);
+    mv_pitch = Clampf(mv_pitch, -step_y, step_y);
+    // 死区：小于 0.15° 就别动，免得贴在目标上抖
+    if (fabsf(mv_yaw) < 0.15f) mv_yaw = 0.0f;
+    if (fabsf(mv_pitch) < 0.15f) mv_pitch = 0.0f;
+    if (mv_yaw == 0.0f && mv_pitch == 0.0f) return;
+
+    *frac_x += mv_yaw / kDegPerCount;
+    *frac_y += mv_pitch / kDegPerCount;
+    LONG mx = (LONG)*frac_x;
+    LONG my = (LONG)*frac_y;
+    *frac_x -= (float)mx;
+    *frac_y -= (float)my;
+    if (mx > 3000) mx = 3000;
+    if (mx < -3000) mx = -3000;
+    if (my > 3000) my = 3000;
+    if (my < -3000) my = -3000;
+    SendMouseMove(mx, my);
+}
+
 // SendInput 只喂前台窗口。后台发出去既改不了游戏视角，又会把系统光标甩走。
 bool GameForeground() {
     const HWND fg = GetForegroundWindow();
@@ -786,62 +836,246 @@ void TickAimbot() {
     }
 
     // ── 还差多少角度 ──────────────────────────────────────────
-    // forward 约定（和 probe33 用「按住 W 的位移方向」量到的一致）：
-    //   forward = (-sin(yaw), -sin(pitch), cos(yaw))
-    //   yaw   = atan2(-fx, fz)        向右转 yaw 增大
-    //   pitch = -asin(fy)             向下看 pitch 增大（MC 约定）
-    const float dx = tgt.x - cam.eye.x;
-    const float dy = tgt.y - cam.eye.y;
-    const float dz = tgt.z - cam.eye.z;
-    const float horiz = sqrtf(dx * dx + dz * dz);
-    if (horiz < 1e-3f) return;
-
-    const float yaw_cur = atan2f(-cam.fx, cam.fz) * 57.29578f;
-    const float yaw_tgt = atan2f(-dx, dz) * 57.29578f;
-    const float d_yaw = Wrap180(yaw_tgt - yaw_cur);
-
-    const float pitch_cur = -asinf(Clampf(cam.fy, -1.0f, 1.0f)) * 57.29578f;
-    const float pitch_tgt = -atan2f(dy, horiz) * 57.29578f;
-    float d_pitch = pitch_tgt - pitch_cur;
-
+    float d_yaw = 0.0f, d_pitch = 0.0f;
+    if (!AimDelta(cam, tgt, &d_yaw, &d_pitch)) return;
     if (ParamOf(fi, L"lock_y", 0.0f) > 0.5f) d_pitch = 0.0f;
 
     // ── 本 tick 走多少 ────────────────────────────────────────
-    // static：固定步长，直给；
-    // dynamic：按剩余角度比例缩，快到了自动减速，收尾不会左右冲。
+    // static：固定步长，直给；dynamic：按剩余角度比例缩，快到了自动减速。
     const bool static_mode = ParamOf(fi, L"mode", 0.0f) > 0.5f;
     const float spd = Clampf(ParamOf(fi, L"speed", 3.0f), 0.1f, 10.0f);
     const float spdy = Clampf(ParamOf(fi, L"y_speed", 3.0f), 0.1f, 10.0f);
-    const float step_x = kAimMaxStepDeg * spd;
-    const float step_y = kAimMaxStepDeg * spdy;
-
-    float move_yaw, move_pitch;
-    if (static_mode) {
-        move_yaw = Clampf(d_yaw, -step_x, step_x);
-        move_pitch = Clampf(d_pitch, -step_y, step_y);
-    } else {
-        move_yaw = Clampf(d_yaw * 0.45f, -step_x, step_x);
-        move_pitch = Clampf(d_pitch * 0.45f, -step_y, step_y);
-    }
-    // 死区：小于 0.15° 就别动，免得贴在目标上抖
-    if (fabsf(move_yaw) < 0.15f) move_yaw = 0.0f;
-    if (fabsf(move_pitch) < 0.15f) move_pitch = 0.0f;
-    if (move_yaw == 0.0f && move_pitch == 0.0f) return;
-
-    // ── 角度 -> 计数，余量累积 ────────────────────────────────
-    // 不累积的话每 tick 都会因为取整丢一点，60Hz 下累积误差肉眼可见。
-    g_aim_frac_x += move_yaw / kDegPerCount;
-    g_aim_frac_y += move_pitch / kDegPerCount;
-    LONG mx = (LONG)g_aim_frac_x;
-    LONG my = (LONG)g_aim_frac_y;
-    g_aim_frac_x -= (float)mx;
-    g_aim_frac_y -= (float)my;
-    if (mx > 3000) mx = 3000;
-    if (mx < -3000) mx = -3000;
-    if (my > 3000) my = 3000;
-    if (my < -3000) my = -3000;
-    SendMouseMove(mx, my);
+    ApplyAimDelta(d_yaw, d_pitch, kAimMaxStepDeg * spd, kAimMaxStepDeg * spdy,
+                  !static_mode, &g_aim_frac_x, &g_aim_frac_y);
 }
+
+// ── KillAura ────────────────────────────────────────────────────
+//
+// 和 Aimbot 共用同一套摄像机转向（AimDelta / ApplyAimDelta），区别是它自己动手点。
+//
+// 反作弊是这个模块的第一约束。ECNukkit 那侧至少会查四件事：
+//   1. 攻击瞬间视线和目标的夹角 —— 「背后打人」是最先被拦的一条
+//   2. 攻击距离是否超过 reach
+//   3. 攻击频率 —— 等距脉冲就是脚本签名
+//   4. 目标切换速率 —— 一帧换一个是明显不像人
+// 所以这里的硬规则：
+//   - 转向没进容差（默认 5°）就只转不点。宁可不打，也不歪着打
+//   - 每击间隔按 cps 算，再叠 ±18% 抖动
+//   - single 模式锁定同一个目标，直到它消失或出范围
+//   - switch / multi 才换目标，且换目标有 switch_delay 冷却
+constexpr float kKaAngleTol = 5.0f;   // 到位判定（度）
+constexpr int   kKaTickMs = 8;        // 转向节流，比 Aimbot 密（要卡容差）
+
+ULONGLONG g_ka_tick_at = 0;
+ULONGLONG g_ka_click_at = 0;
+ULONGLONG g_ka_switch_at = 0;
+uintptr_t g_ka_target = 0;
+float g_ka_frac_x = 0.0f;
+float g_ka_frac_y = 0.0f;
+int g_ka_rr = 0;
+bool g_ka_warned_health = false;
+bool g_ka_warned_other = false;
+
+struct KaCand {
+    uintptr_t actor;
+    float x, y, z;
+    float key;
+};
+
+// priority: 0=distance 1=health 2=angle。
+// health 要读实体血量，那条链还没通，退回 angle（调用方负责提示一次）。
+// 返回候选数，已按 key 升序排好。
+int CollectKaCands(const sdk::GameCamera& cam, float range, float fov_deg,
+                   int priority, KaCand* out, int cap) {
+    uintptr_t list[512];
+    const int n = sdk::ActorSetSnapshot(list, 512);
+    if (n <= 0) return 0;
+
+    const uintptr_t lp = sdk::LocalPlayer();
+    const float half_cos = cosf(Clampf(fov_deg, 1.0f, 360.0f) * 0.5f * 0.01745329f);
+    const float r2 = range * range;
+
+    KaCand tmp[64];
+    int nt = 0;
+    for (int i = 0; i < n; ++i) {
+        if (list[i] == lp) continue;
+        sdk::Vec3 p;
+        if (!mem::Read(list[i] + sdk::kOffPos, &p, sizeof(p))) continue;
+        const float dx = p.x - cam.eye.x;
+        const float dy = p.y - cam.eye.y;
+        const float dz = p.z - cam.eye.z;
+        const float d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 < 0.04f || d2 > r2) continue;
+        const float inv = 1.0f / sqrtf(d2);
+        const float dot = (dx * cam.fx + dy * cam.fy + dz * cam.fz) * inv;
+        if (dot < half_cos) continue;
+        const float ang = acosf(Clampf(dot, -1.0f, 1.0f)) * 57.29578f;
+        if (nt >= 64) break;
+        tmp[nt].actor = list[i];
+        tmp[nt].x = p.x;
+        tmp[nt].y = p.y;
+        tmp[nt].z = p.z;
+        tmp[nt].key = (priority == 0) ? d2 : ang;   // 1 也走 angle
+        ++nt;
+    }
+
+    int cnt = (nt < cap) ? nt : cap;
+    for (int a = 0; a < cnt; ++a) {
+        int best = a;
+        for (int b = a + 1; b < nt; ++b) {
+            if (tmp[b].key < tmp[best].key) best = b;
+        }
+        if (best != a) {
+            KaCand t = tmp[a];
+            tmp[a] = tmp[best];
+            tmp[best] = t;
+        }
+        out[a] = tmp[a];
+    }
+    return cnt;
+}
+
+void TickKillAura() {
+    const int fi = FindFeature(L"KillAura");
+    if (!Active(fi)) {
+        g_ka_tick_at = 0;
+        g_ka_click_at = 0;
+        g_ka_switch_at = 0;
+        g_ka_target = 0;
+        g_ka_frac_x = 0.0f;
+        g_ka_frac_y = 0.0f;
+        g_ka_rr = 0;
+        return;
+    }
+
+    // 触发：onhold / onholdattack 要按住左键；bind_key 要按住键；都没配则常开
+    const bool on_hold = ParamOf(fi, L"onhold", 0.0f) > 0.5f;
+    const bool on_hold_attack = ParamOf(fi, L"onholdattack", 0.0f) > 0.5f;
+    const int bind = cfg::ModuleBind(fi);
+    const bool held = input::PhysLeftDown();
+
+    if ((on_hold || on_hold_attack) && !held) {
+        g_ka_target = 0;
+        g_ka_frac_x = 0.0f;
+        g_ka_frac_y = 0.0f;
+        return;
+    }
+    if (bind != 0 && !input::KeyDown(bind)) {
+        g_ka_target = 0;
+        g_ka_frac_x = 0.0f;
+        g_ka_frac_y = 0.0f;
+        return;
+    }
+
+    // onweapon / ecbypass 这两个参数依赖链路或服务端行为，现在只能如实说明
+    if (!g_ka_warned_other) {
+        const bool ow = ParamOf(fi, L"onweapon", 0.0f) > 0.5f;
+        const bool eb = ParamOf(fi, L"ecbypass", 0.0f) > 0.5f;
+        if (ow || eb) {
+            g_ka_warned_other = true;
+            LogLine("[mod] KillAura 的 onweapon / ecbypass 还没有对应链路，当前按常开、不加额外节流处理");
+        }
+    }
+
+    if (!GameForeground()) return;
+
+    const ULONGLONG now = GetTickCount64();
+    if (now < g_ka_tick_at) return;
+    g_ka_tick_at = now + kKaTickMs;
+
+    const uintptr_t lp = sdk::LocalPlayer();
+    if (lp == 0) return;
+    const uintptr_t ci = sdk::ClientInstanceOf(lp);
+    if (ci == 0) return;
+    sdk::GameCamera cam;
+    if (!sdk::ReadGameCamera(ci, &cam)) return;
+
+    const float range = Clampf(ParamOf(fi, L"range", 3.0f), 1.0f, 10.0f);
+    const float fov = ParamOf(fi, L"fov", 180.0f);
+    const int priority = (int)ParamOf(fi, L"priority", 0.0f);
+    const int mode = (int)ParamOf(fi, L"attack_mode", 0.0f);   // 0 single 1 multi 2 switch
+
+    if (priority == 1 && !g_ka_warned_health) {
+        g_ka_warned_health = true;
+        LogLine("[mod] KillAura 优先级 health 需要实体血量链路（还没通），本次按 angle 选目标");
+    }
+
+    // ── 目标：single 锁死，switch / multi 打完就换 ─────────────
+    sdk::Vec3 tgt;
+    bool have = false;
+    if (g_ka_target != 0) {
+        sdk::Vec3 p;
+        if (mem::Read(g_ka_target + sdk::kOffPos, &p, sizeof(p))) {
+            const float dx = p.x - cam.eye.x;
+            const float dy = p.y - cam.eye.y;
+            const float dz = p.z - cam.eye.z;
+            if (dx * dx + dy * dy + dz * dz <= range * range) {
+                tgt = p;
+                have = true;
+            }
+        }
+        if (!have) g_ka_target = 0;
+    }
+    if (!have) {
+        if (now < g_ka_switch_at) return;
+        sdk::ActorSetStart();
+        KaCand cand[10];
+        const int cap = (mode == 1)
+                            ? (int)Clampf(ParamOf(fi, L"multi_limit", 1.0f), 1.0f, 10.0f)
+                            : 1;
+        const int nc = CollectKaCands(cam, range, fov, priority, cand, cap);
+        if (nc <= 0) { g_ka_target = 0; return; }
+        int pick = 0;
+        if (mode == 1 && nc > 1) {
+            pick = g_ka_rr % nc;
+        }
+        g_ka_target = cand[pick].actor;
+        tgt.x = cand[pick].x;
+        tgt.y = cand[pick].y;
+        tgt.z = cand[pick].z;
+    }
+
+    // ── 转向 ──────────────────────────────────────────────────
+    float d_yaw = 0.0f, d_pitch = 0.0f;
+    if (!AimDelta(cam, tgt, &d_yaw, &d_pitch)) return;
+    // KillAura 不暴露 speed：用固定的中速，宁慢勿快。
+    // 一帧对准是「瞬移」指纹，慢慢压过去才像人。
+    ApplyAimDelta(d_yaw, d_pitch, 6.0f, 5.0f, true, &g_ka_frac_x, &g_ka_frac_y);
+
+    // ── 到位了吗 ──────────────────────────────────────────────
+    if (fabsf(d_yaw) > kKaAngleTol || fabsf(d_pitch) > kKaAngleTol) return;
+    if (now < g_ka_click_at) return;
+
+    // 玩家自己按着左键时**不补点击**：MC 里按住左键本来就是连续攻击，
+    // 我们再插一记等于把 CPS 翻倍 —— 这是最容易被打回的一条。
+    // 这种情况只负责把视角压到位，攻击交给游戏自己。
+    // 注意这也正是 onhold 模式的正确语义：按住激活的是「自动瞄准」，
+    // 攻击由游戏的原生连击完成，不是我们额外灌点击。
+    if (held) return;
+
+    TapMouse();
+
+    const float cps = Clampf(ParamOf(fi, L"cps", 12.0f), 1.0f, 20.0f);
+    g_ka_click_at = now + JitterMs((int)(1000.0f / cps), 18);
+
+    if (mode == 1) {
+        // multi：同一轮里换下一个目标，点满 multi_limit 个才歇一下
+        g_ka_target = 0;
+        ++g_ka_rr;
+        const int lim = (int)Clampf(ParamOf(fi, L"multi_limit", 1.0f), 1.0f, 10.0f);
+        if (g_ka_rr >= lim) {
+            g_ka_rr = 0;
+            g_ka_switch_at = now + 250;   // 一轮打完歇 250ms，不然就成了连点不停
+        }
+    } else if (mode == 2) {
+        // switch：打完就丢目标，冷却 switch_delay 再换
+        const float sw = Clampf(ParamOf(fi, L"switch_delay", 1.0f), 0.0f, 20.0f);
+        g_ka_target = 0;
+        ++g_ka_rr;
+        g_ka_switch_at = now + (ULONGLONG)(sw * 1000.0f);
+    }
+}
+
 
 // ── 投影矩阵（Zoom / BigFov）───────────────────────────────────
 //
@@ -995,8 +1229,9 @@ bool Implemented(const wchar_t* english_name) {
     // Aimbot 用的是 ClientInstance 那条：静态 kClientInstance -> 4×4 旋转矩阵
     // + Projection + CameraPos，再来回合成鼠标位移。不走 mRot（Actor 上没这个字段）。
     // Zoom / BigFov 只写 ClientInstance+0x520 的 p00/p11（实测写进去不会被覆盖）。
+    // KillAura 是 Aimbot 的转向 + 自动点击，判据同样全部来自摄像机链路。
     static const wchar_t* kMemory[] = {L"ESP", L"CoordDisplay", L"Aimbot",
-                                       L"Zoom", L"BigFov"};
+                                       L"KillAura", L"Zoom", L"BigFov"};
     for (size_t i = 0; i < sizeof(kMemory) / sizeof(kMemory[0]); ++i) {
         if (wcscmp(kMemory[i], english_name) == 0) return true;
     }
@@ -1030,6 +1265,13 @@ void ReleaseAll() {
     g_crit_next = 0;
     g_crit_phase = 0;
     g_crit_attack_at = 0;
+    g_ka_tick_at = 0;
+    g_ka_click_at = 0;
+    g_ka_switch_at = 0;
+    g_ka_target = 0;
+    g_ka_frac_x = 0.0f;
+    g_ka_frac_y = 0.0f;
+    g_ka_rr = 0;
 }
 
 void RestoreProjection() {
@@ -1062,10 +1304,12 @@ void Tick() {
         const int ntd = FindFeature(L"NoThrowDelay");
         const int aim = FindFeature(L"Aimbot");
         const int crit = FindFeature(L"Criticals");
+        const int ka = FindFeature(L"KillAura");
         const bool need_mouse = (ac >= 0 && cfg::ModuleOn(ac)) ||
                                 (asr >= 0 && cfg::ModuleOn(asr)) ||
                                 (ntd >= 0 && cfg::ModuleOn(ntd)) ||
                                 (aim >= 0 && cfg::ModuleOn(aim)) ||
+                                (ka >= 0 && cfg::ModuleOn(ka)) ||
                                 (crit >= 0 && cfg::ModuleOn(crit));
         input::SetPhysicalWanted(need_mouse);
     }
@@ -1077,6 +1321,7 @@ void Tick() {
     TickAttackSprintReset();
     TickCriticals();
     TickAimbot();
+    TickKillAura();
     TickProjection(false);
     TickSprint();
     TickAntiAfk();
