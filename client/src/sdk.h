@@ -655,19 +655,42 @@ inline bool IsActorVtable(uintptr_t vt) {
     if (mem::InImage(vt)) {
         const uintptr_t col = mem::ReadPtr(vt - 8);
         if (mem::InImage(col)) {
+            uint32_t self_td = 0;
             uint32_t chd_rva = 0;
-            if (mem::Read(col + 16, &chd_rva) && chd_rva != 0) {
+            if (mem::Read(col + 12, &self_td) && mem::Read(col + 16, &chd_rva) &&
+                chd_rva != 0) {
+                // 快速路径：自己的类名就带关键词（LocalPlayer / Player /
+                // PlayerSnapshot ...）。真正需要走继承链的是 Zombie、Cow
+                // 这种，它们自己的名字里什么线索都没有。
+                char own[96] = {0};
+                if (self_td != 0 &&
+                    mem::Read(base + self_td + 16, own, sizeof(own) - 1)) {
+                    if (NameHasCI(own, "Actor") || NameHasCI(own, "Player") ||
+                        NameHasCI(own, "Mob") || NameHasCI(own, "Entity")) {
+                        ok = true;
+                    }
+                }
                 const uintptr_t chd = base + chd_rva;
                 uint32_t num = 0;
                 uint32_t arr_rva = 0;
-                if (mem::Read(chd + 8, &num) && mem::Read(chd + 12, &arr_rva) &&
+                if (!ok && mem::Read(chd + 8, &num) && mem::Read(chd + 12, &arr_rva) &&
                     num > 0 && num <= 32 && arr_rva != 0) {
                     const uintptr_t arr = base + arr_rva;
                     for (uint32_t i = 0; i < num && !ok; ++i) {
-                        uint32_t td_rva = 0;
-                        if (!mem::Read(arr + (uintptr_t)i * 4, &td_rva) || td_rva == 0) {
+                        uint32_t bcd_rva = 0;
+                        if (!mem::Read(arr + (uintptr_t)i * 4, &bcd_rva) || bcd_rva == 0) {
                             continue;
                         }
+                        // ★ 这里必须多跳一层：BaseClassArray 的元素是
+                        //   RTTIBaseClassDescriptor 的 RVA，BCD+0 才是
+                        //   TypeDescriptor 的 RVA。
+                        //   少跳这一层的后果实测过：读出来的名字全是空字符串，
+                        //   于是所有对象（**包括 LocalPlayer 自己**）都被判成
+                        //   不是 Actor，scanactor 扫完 1.2GB 返回 count=0。
+                        //   验证方法：BaseClassArray[0] 是"自己"，所以
+                        //   [base + arr[0]] 必须等于 COL+12 那个 td_rva。
+                        uint32_t td_rva = 0;
+                        if (!mem::Read(base + bcd_rva, &td_rva) || td_rva == 0) continue;
                         char nm[96] = {0};
                         if (!mem::Read(base + td_rva + 16, nm, sizeof(nm) - 1)) continue;
                         if (NameHasCI(nm, "Actor") || NameHasCI(nm, "Player") ||
