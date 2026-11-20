@@ -9,6 +9,7 @@
 #include "modules.h"
 
 #include <windows.h>
+#include <math.h>
 #include <cwchar>
 #include <wchar.h>
 #include <stdlib.h>
@@ -18,6 +19,7 @@
 #include "gui/catalog.h"
 #include "input.h"
 #include "log.h"
+#include "sdk.h"
 
 namespace xiaoyu {
 namespace modules {
@@ -520,6 +522,257 @@ void TickAttackSprintReset() {
     }
 }
 
+// ── Aimbot ──────────────────────────────────────────────────────
+//
+// 视角不在 Actor 上：实测 LocalPlayer 前 24KB 里没有任何 float 跟着视角变，
+// 把 clientinstance / level / actorsmgr / options / localplayer 五个根对象全差分，
+// 也只有 ClientInstance 在动。所以瞄准只能走游戏自己的摄像机：
+//   ClientInstance + 0x4E0  行主序 4×4 旋转矩阵，列 = right / up / -forward
+//   ClientInstance + 0x520  Projection，p00 在 +0x00、p11 在 +0x14
+//   ClientInstance + 0x560  相机位置（与 LocalPlayer.mPos 完全相等，
+//                           说明 mPos 本来就是眼睛位置，不要再加眼高）
+//
+// 角度 -> 鼠标计数：实测 look 300（MOUSEEVENTF_MOVE 的 mickey）让 yaw 走
+// +79.7°，即 0.2655°/计数。这个系数跟着游戏内灵敏度走，换灵敏度要重新标。
+// 系统指针加速不影响它 —— 游戏用 Raw Input 读原始 mickey，不走加速曲线。
+//
+// 为什么走闭环而不是算完一次转到位：
+//   1. 一次到位是标准的「瞬移甩枪」指纹，回放一眼能看出来；
+//   2. 系数一漂（换灵敏度、DPI、动态 FOV），开环就越偏越多；
+//   3. 闭环每 tick 重读摄像机，取整误差下一 tick 自己纠回来。
+constexpr float kDegPerCount = 0.2655f;
+constexpr float kAimMaxStepDeg = 2.5f;    // speed=1 时每 tick 的最大转角
+constexpr int   kAimMinIntervalMs = 15;   // 最快 ~66Hz，和渲染帧率解耦
+constexpr int   kAimPickMs = 200;         // 重挑目标的间隔
+constexpr int   kAimClickWindowMs = 280;  // onclick 的持续窗口
+
+ULONGLONG g_aim_next = 0;
+float g_aim_frac_x = 0.0f;    // 上一 tick 没发出去的亚计数余量
+float g_aim_frac_y = 0.0f;
+bool g_aim_prev_left = false;
+ULONGLONG g_aim_click_until = 0;
+bool g_aim_warned_weapon = false;
+uintptr_t g_aim_target = 0;
+ULONGLONG g_aim_pick_at = 0;
+
+float Clampf(float v, float lo, float hi) {
+    return v < lo ? lo : (v > hi ? hi : v);
+}
+
+// 归到 (-180, 180]
+float Wrap180(float d) {
+    while (d > 180.0f) d -= 360.0f;
+    while (d <= -180.0f) d += 360.0f;
+    return d;
+}
+
+// SendInput 只喂前台窗口。后台发出去既改不了游戏视角，又会把系统光标甩走。
+bool GameForeground() {
+    const HWND fg = GetForegroundWindow();
+    if (fg == nullptr) return false;
+    DWORD pid = 0;
+    GetWindowThreadProcessId(fg, &pid);
+    return pid == GetCurrentProcessId();
+}
+
+void SendMouseMove(LONG dx, LONG dy) {
+    if (dx == 0 && dy == 0) return;
+    INPUT in = {};
+    in.type = INPUT_MOUSE;
+    in.mi.dx = dx;
+    in.mi.dy = dy;
+    in.mi.dwFlags = MOUSEEVENTF_MOVE;
+    SendInput(1, &in, sizeof(in));
+}
+
+// 挑目标：aim_range 内、fov 锥内、离相机最近的那个。
+// 比距离平方省一个 sqrt；角度筛选用单位向量点积对 cos(fov/2) 比。
+bool PickAimTarget(const sdk::GameCamera& cam, float range, float fov_deg,
+                   float y_off, sdk::Vec3* out, uintptr_t* out_actor) {
+    uintptr_t list[512];
+    const int n = sdk::ActorSetSnapshot(list, 512);
+    if (n <= 0) return false;
+
+    const uintptr_t lp = sdk::LocalPlayer();
+    const float half_cos = cosf(Clampf(fov_deg, 1.0f, 360.0f) * 0.5f * 0.01745329f);
+    float r = (range > 0.0f) ? range : 1.0f;
+    float best_d2 = r * r;
+
+    bool found = false;
+    for (int i = 0; i < n; ++i) {
+        if (list[i] == lp) continue;
+        sdk::Vec3 p;
+        if (!mem::Read(list[i] + sdk::kOffPos, &p, sizeof(p))) continue;
+        const float dx = p.x - cam.eye.x;
+        const float dy = p.y + y_off - cam.eye.y;
+        const float dz = p.z - cam.eye.z;
+        const float d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 < 0.04f || d2 > best_d2) continue;
+        const float inv = 1.0f / sqrtf(d2);
+        const float dot = (dx * cam.fx + dy * cam.fy + dz * cam.fz) * inv;
+        if (dot < half_cos) continue;   // 在 fov 锥外
+        best_d2 = d2;
+        out->x = p.x;
+        out->y = p.y + y_off;
+        out->z = p.z;
+        *out_actor = list[i];
+        found = true;
+    }
+    return found;
+}
+
+void TickAimbot() {
+    const int fi = FindFeature(L"Aimbot");
+    if (!Active(fi)) {
+        g_aim_next = 0;
+        g_aim_frac_x = 0.0f;
+        g_aim_frac_y = 0.0f;
+        g_aim_target = 0;
+        g_aim_pick_at = 0;
+        g_aim_prev_left = false;
+        g_aim_click_until = 0;
+        g_aim_warned_weapon = false;
+        return;
+    }
+
+    // ── 触发条件 ──────────────────────────────────────────────
+    // onclick / onhold / bind_key 全没配 = 常开（原版也是这个语义）。
+    // onclick 不只看按下沿，还给一个短窗口：游戏里攻击是按下瞬间判定，
+    // 但视角要跨几 tick 才收敛，只瞄一帧等于没瞄。
+    const bool on_click = ParamOf(fi, L"onclick", 0.0f) > 0.5f;
+    const bool on_hold = ParamOf(fi, L"onhold", 0.0f) > 0.5f;
+    const int bind = cfg::ModuleBind(fi);
+
+    const bool left = input::PhysLeftDown();
+    if (on_click) {
+        if (left && !g_aim_prev_left) g_aim_click_until = GetTickCount64() + kAimClickWindowMs;
+    } else {
+        g_aim_click_until = 0;
+    }
+    g_aim_prev_left = left;
+
+    const ULONGLONG now = GetTickCount64();
+    bool want;
+    if (on_click || on_hold || bind != 0) {
+        want = false;
+        if (on_click && now < g_aim_click_until) want = true;
+        if (on_hold && left) want = true;
+        if (bind != 0 && input::KeyDown(bind)) want = true;
+    } else {
+        want = true;
+    }
+    if (!want) {
+        g_aim_next = 0;
+        g_aim_frac_x = 0.0f;
+        g_aim_frac_y = 0.0f;
+        return;
+    }
+
+    // onweapon 要走「手持物品」链路（BlockSource -> 玩家背包 -> 选中槽），
+    // 这条链还没打通。别假装实现了：只提示一次，按常开跑。
+    if (ParamOf(fi, L"onweapon", 0.0f) > 0.5f) {
+        if (!g_aim_warned_weapon) {
+            g_aim_warned_weapon = true;
+            LogLine("[mod] Aimbot 的「仅持武器」还没有手持物品链路，当前按常开处理");
+        }
+    } else {
+        g_aim_warned_weapon = false;
+    }
+
+    if (!GameForeground()) { g_aim_next = 0; return; }
+    if (now < g_aim_next) return;
+    g_aim_next = now + kAimMinIntervalMs;
+
+    // ── 摄像机 ────────────────────────────────────────────────
+    const uintptr_t lp = sdk::LocalPlayer();
+    if (lp == 0) return;
+    const uintptr_t ci = sdk::ClientInstanceOf(lp);
+    if (ci == 0) return;
+    sdk::GameCamera cam;
+    if (!sdk::ReadGameCamera(ci, &cam)) return;
+
+    // ── 目标：每 kAimPickMs 重挑一次，中间只重读选中那个（省 RPM） ──
+    const float range = ParamOf(fi, L"aim_range", 20.0f);
+    const float fov = ParamOf(fi, L"fov", 90.0f);
+    const float y_off = ParamOf(fi, L"y_offset", 0.0f);
+
+    sdk::Vec3 tgt;
+    bool have = false;
+    if (g_aim_target != 0 && now < g_aim_pick_at) {
+        sdk::Vec3 p;
+        if (mem::Read(g_aim_target + sdk::kOffPos, &p, sizeof(p))) {
+            tgt.x = p.x;
+            tgt.y = p.y + y_off;
+            tgt.z = p.z;
+            have = true;
+        }
+    }
+    if (!have) {
+        g_aim_target = 0;
+        sdk::ActorSetStart();
+        have = PickAimTarget(cam, range, fov, y_off, &tgt, &g_aim_target);
+        g_aim_pick_at = now + kAimPickMs;
+        if (!have) { g_aim_target = 0; return; }
+    }
+
+    // ── 还差多少角度 ──────────────────────────────────────────
+    // forward 约定（和 probe33 用「按住 W 的位移方向」量到的一致）：
+    //   forward = (-sin(yaw), -sin(pitch), cos(yaw))
+    //   yaw   = atan2(-fx, fz)        向右转 yaw 增大
+    //   pitch = -asin(fy)             向下看 pitch 增大（MC 约定）
+    const float dx = tgt.x - cam.eye.x;
+    const float dy = tgt.y - cam.eye.y;
+    const float dz = tgt.z - cam.eye.z;
+    const float horiz = sqrtf(dx * dx + dz * dz);
+    if (horiz < 1e-3f) return;
+
+    const float yaw_cur = atan2f(-cam.fx, cam.fz) * 57.29578f;
+    const float yaw_tgt = atan2f(-dx, dz) * 57.29578f;
+    const float d_yaw = Wrap180(yaw_tgt - yaw_cur);
+
+    const float pitch_cur = -asinf(Clampf(cam.fy, -1.0f, 1.0f)) * 57.29578f;
+    const float pitch_tgt = -atan2f(dy, horiz) * 57.29578f;
+    float d_pitch = pitch_tgt - pitch_cur;
+
+    if (ParamOf(fi, L"lock_y", 0.0f) > 0.5f) d_pitch = 0.0f;
+
+    // ── 本 tick 走多少 ────────────────────────────────────────
+    // static：固定步长，直给；
+    // dynamic：按剩余角度比例缩，快到了自动减速，收尾不会左右冲。
+    const bool static_mode = ParamOf(fi, L"mode", 0.0f) > 0.5f;
+    const float spd = Clampf(ParamOf(fi, L"speed", 3.0f), 0.1f, 10.0f);
+    const float spdy = Clampf(ParamOf(fi, L"y_speed", 3.0f), 0.1f, 10.0f);
+    const float step_x = kAimMaxStepDeg * spd;
+    const float step_y = kAimMaxStepDeg * spdy;
+
+    float move_yaw, move_pitch;
+    if (static_mode) {
+        move_yaw = Clampf(d_yaw, -step_x, step_x);
+        move_pitch = Clampf(d_pitch, -step_y, step_y);
+    } else {
+        move_yaw = Clampf(d_yaw * 0.45f, -step_x, step_x);
+        move_pitch = Clampf(d_pitch * 0.45f, -step_y, step_y);
+    }
+    // 死区：小于 0.15° 就别动，免得贴在目标上抖
+    if (fabsf(move_yaw) < 0.15f) move_yaw = 0.0f;
+    if (fabsf(move_pitch) < 0.15f) move_pitch = 0.0f;
+    if (move_yaw == 0.0f && move_pitch == 0.0f) return;
+
+    // ── 角度 -> 计数，余量累积 ────────────────────────────────
+    // 不累积的话每 tick 都会因为取整丢一点，60Hz 下累积误差肉眼可见。
+    g_aim_frac_x += move_yaw / kDegPerCount;
+    g_aim_frac_y += move_pitch / kDegPerCount;
+    LONG mx = (LONG)g_aim_frac_x;
+    LONG my = (LONG)g_aim_frac_y;
+    g_aim_frac_x -= (float)mx;
+    g_aim_frac_y -= (float)my;
+    if (mx > 3000) mx = 3000;
+    if (mx < -3000) mx = -3000;
+    if (my > 3000) my = 3000;
+    if (my < -3000) my = -3000;
+    SendMouseMove(mx, my);
+}
+
 }  // namespace
 
 bool Implemented(const wchar_t* english_name) {
@@ -542,12 +795,14 @@ bool Implemented(const wchar_t* english_name) {
     for (size_t i = 0; i < sizeof(kSynth) / sizeof(kSynth[0]); ++i) {
         if (wcscmp(kSynth[i], english_name) == 0) return true;
     }
-    // 读游戏内存实现的（esp.cpp / gui 的 HUD）。链路：
+    // 读游戏内存实现的（esp.cpp / sdk.h 的摄像机链路）。链路：
     //   LocalPlayer 静态全局 -> BlockSource -> Level -> ActorManager
     //   -> ECS registry -> ActorOwnerComponent / RotationComponent
     // ESP 用整条链路；CoordDisplay 只用 LocalPlayer -> mPos，所以它同时也是
     // 最便宜的一个"链路是否还活着"的探针。
-    static const wchar_t* kMemory[] = {L"ESP", L"CoordDisplay"};
+    // Aimbot 用的是 ClientInstance 那条：静态 kClientInstance -> 4×4 旋转矩阵
+    // + Projection + CameraPos，再来回合成鼠标位移。不走 mRot（Actor 上没这个字段）。
+    static const wchar_t* kMemory[] = {L"ESP", L"CoordDisplay", L"Aimbot"};
     for (size_t i = 0; i < sizeof(kMemory) / sizeof(kMemory[0]); ++i) {
         if (wcscmp(kMemory[i], english_name) == 0) return true;
     }
@@ -571,6 +826,13 @@ void ReleaseAll() {
     g_spam_next = 0;
     g_spin_next = 0;
     g_sprint_suppress_until = 0;
+    g_aim_next = 0;
+    g_aim_frac_x = 0.0f;
+    g_aim_frac_y = 0.0f;
+    g_aim_target = 0;
+    g_aim_pick_at = 0;
+    g_aim_click_until = 0;
+    g_aim_prev_left = false;
 }
 
 void Tick() {
@@ -592,9 +854,11 @@ void Tick() {
         const int ac = FindFeature(L"AC");
         const int asr = FindFeature(L"AttackSprintReset");
         const int ntd = FindFeature(L"NoThrowDelay");
+        const int aim = FindFeature(L"Aimbot");
         const bool need_mouse = (ac >= 0 && cfg::ModuleOn(ac)) ||
                                 (asr >= 0 && cfg::ModuleOn(asr)) ||
-                                (ntd >= 0 && cfg::ModuleOn(ntd));
+                                (ntd >= 0 && cfg::ModuleOn(ntd)) ||
+                                (aim >= 0 && cfg::ModuleOn(aim));
         input::SetPhysicalWanted(need_mouse);
     }
     {
@@ -603,6 +867,7 @@ void Tick() {
     }
     TickAutoClicker();
     TickAttackSprintReset();
+    TickAimbot();
     TickSprint();
     TickAntiAfk();
     TickAntiAfkRelease();
