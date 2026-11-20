@@ -619,38 +619,62 @@ inline int ScanActors(uintptr_t* out, int max_out, size_t* scanned_out = nullptr
 
     int got = 0;
     size_t scanned = 0;
-    const int rc = (int)mem::RegionCount();
-    for (int ri = 0; ri < rc && got < max_out; ++ri) {
-        mem::Region r;
-        if (!mem::GetRegion(ri, &r)) continue;
-        // 只扫堆：映像自己已经用 Scan 查过，可执行段不可能是对象
-        if (r.image || r.exec) continue;
-        if ((r.protect & (PAGE_READWRITE | PAGE_WRITECOPY |
-                          PAGE_EXECUTE_READWRITE)) == 0) {
-            continue;
-        }
-        for (uintptr_t off = 0; off < r.size && got < max_out; off += kChunk) {
-            if (deadline_ms != 0 && GetTickCount64() > deadline_ms) goto done;
-            const size_t left = (size_t)(r.size - off);
-            const size_t n = left < kChunk ? left : kChunk;
-            if (!mem::Read(r.base + off, buf, n)) continue;
-            scanned += n;
-            for (size_t i = 0; i + 8 <= n; i += 8) {
-                uintptr_t vt;
-                memcpy(&vt, buf + i, sizeof(vt));
-                if (vt < base || vt >= img_end) continue;
-                const uintptr_t obj = r.base + off + i;
-                Vec3 p;
-                if (!mem::Read(obj + kOffPos, &p, sizeof(p))) continue;
-                if (!PlausiblePos(p)) continue;
-                bool dup = false;
-                for (int k = 0; k < got; ++k) {
-                    if (out[k] == obj) { dup = true; break; }
-                }
-                if (dup) continue;
-                out[got++] = obj;
+
+    // ★ 必须自己走 VirtualQuery：mem::RegionCount()/GetRegion() 只覆盖**主模块
+    //   映像**（g_regions 是按 SizeOfImage 枚举的，全部 image=true），拿不到堆。
+    //   第一版 ScanActors 就是错在这里，一个区段都没扫，scanned=0x0。
+    uintptr_t cur = 0x10000;
+    const uintptr_t kUserMax = 0x00007FFFFFFEFFFFull;
+    while (cur < kUserMax && got < max_out) {
+        MEMORY_BASIC_INFORMATION mbi;
+        if (VirtualQuery((LPCVOID)cur, &mbi, sizeof(mbi)) == 0) break;
+        const uintptr_t rbase = (uintptr_t)mbi.BaseAddress;
+        const size_t rsize = mbi.RegionSize;
+        if (rsize == 0) break;
+        const uintptr_t rend = rbase + rsize;
+
+        bool want = false;
+        if (mbi.State == MEM_COMMIT && mbi.Type == MEM_PRIVATE) {
+            const DWORD p = mbi.Protect;
+            if ((p & PAGE_GUARD) == 0 && (p & PAGE_NOACCESS) == 0 &&
+                (p & (PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READWRITE)) != 0) {
+                want = true;
             }
         }
+
+        if (want) {
+            for (uintptr_t off = 0; off < rsize && got < max_out; off += kChunk) {
+                if (deadline_ms != 0 && GetTickCount64() > deadline_ms) goto done;
+                const size_t left = (size_t)(rsize - off);
+                const size_t n = left < kChunk ? left : kChunk;
+                if (!mem::Read(rbase + off, buf, n)) continue;
+                scanned += n;
+                for (size_t i = 0; i + 8 <= n; i += 8) {
+                    uintptr_t vt;
+                    memcpy(&vt, buf + i, sizeof(vt));
+                    if (vt < base || vt >= img_end) continue;
+                    const uintptr_t obj = rbase + off + i;
+                    // 坐标字段可能还在这一块缓冲里，直接读；越界才走 mem::Read
+                    Vec3 p;
+                    const size_t need = i + kOffPos + sizeof(Vec3);
+                    if (need <= n) {
+                        memcpy(&p, buf + i + kOffPos, sizeof(p));
+                    } else if (!mem::Read(obj + kOffPos, &p, sizeof(p))) {
+                        continue;
+                    }
+                    if (!PlausiblePos(p)) continue;
+                    bool dup = false;
+                    for (int k = 0; k < got; ++k) {
+                        if (out[k] == obj) { dup = true; break; }
+                    }
+                    if (dup) continue;
+                    out[got++] = obj;
+                }
+            }
+        }
+
+        if (rend <= cur) break;
+        cur = rend;
     }
 done:
     if (scanned_out != nullptr) *scanned_out = scanned;
