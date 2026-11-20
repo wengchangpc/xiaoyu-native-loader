@@ -218,6 +218,130 @@ void CmdScanFov(HANDLE h, char** ctx) {
     SendOk(h, out.data(), (int)out.size());
 }
 
+// ── 全进程内存扫描（诊断用）─────────────────────────────────────
+//
+// 为什么要放进 DLL：VirtualQuery 只能查**自己进程**的地址空间。外部工具想
+// 遍历这个进程的堆，得 OpenProcess + 自己维护区段表，句柄和访问模式都很显眼。
+// 放在游戏进程里扫，外面只看到一条管道请求。
+//
+// 用来找 SDK 对象和全局槽位，两步都不需要预先知道任何偏移：
+//   1) scan <base+vtRVA>      对象首 8 字节就是 vftable 绝对地址，这是个
+//                             8 字节常量，堆里命中率极高 → 拿到对象地址
+//   2) scan <对象地址>         谁的值等于这个地址 → 就是持有它的全局槽位
+//
+// 实测这一步是必须的：这个 build 的可写节里只有一个 vftable 指针，
+// 也就是说所有 SDK 对象都是堆分配的，静态扫描 .data 一条都找不到。
+bool ScanReadable(DWORD prot) {
+    if (prot & PAGE_GUARD) return false;
+    if (prot & PAGE_NOACCESS) return false;
+    switch (prot & 0xFF) {
+        case PAGE_READONLY:
+        case PAGE_READWRITE:
+        case PAGE_WRITECOPY:
+        case PAGE_EXECUTE_READ:
+        case PAGE_EXECUTE_READWRITE:
+        case PAGE_EXECUTE_WRITECOPY:
+            return true;
+        default:
+            return false;
+    }
+}
+
+int ScanBuf(const unsigned char* p, size_t len, uintptr_t needle,
+            uintptr_t* hits, int cap, int n) {
+    if (cap <= 0 || len < 8) return n;
+    const unsigned char b0 = (unsigned char)(needle & 0xFF);
+    size_t i = 0;
+    while (n < cap && i + 8 <= len) {
+        const void* f = memchr(p + i, b0, len - i - 7);
+        if (f == nullptr) break;
+        const size_t off = (size_t)((const unsigned char*)f - p);
+        uintptr_t v = 0;
+        memcpy(&v, p + off, 8);
+        if (v == needle && (off % 8) == 0) hits[n++] = (uintptr_t)(p + off);
+        i = off + 1;
+    }
+    return n;
+}
+
+// 只扫私有内存（堆/栈）：MEM_IMAGE 是模块本体，MEM_MAPPED 是文件映射，
+// 两者都不可能放 SDK 对象，跳过能省掉几百 MB 的无效扫描。
+int ScanProcess(uintptr_t needle, uintptr_t lo, uintptr_t hi, uintptr_t* hits,
+                int cap, size_t* scanned, int* regions, bool* aborted,
+                ULONGLONG deadline) {
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    uintptr_t addr = (uintptr_t)si.lpMinimumApplicationAddress;
+    const uintptr_t maxa = (uintptr_t)si.lpMaximumApplicationAddress;
+    int n = 0;
+    MEMORY_BASIC_INFORMATION mbi;
+
+    while (addr < maxa) {
+        if (GetTickCount64() > deadline) {
+            *aborted = true;
+            break;
+        }
+        if (VirtualQuery((LPCVOID)addr, &mbi, sizeof(mbi)) != sizeof(mbi)) break;
+        const uintptr_t b = (uintptr_t)mbi.BaseAddress;
+        const uintptr_t e = b + mbi.RegionSize;
+        if (mbi.State == MEM_COMMIT && mbi.Type == MEM_PRIVATE &&
+            ScanReadable(mbi.Protect) && e > lo && b < hi) {
+            ++*regions;
+            const uintptr_t s = (b < lo) ? lo : b;
+            const uintptr_t t = (e > hi) ? hi : e;
+            if (t > s) {
+                *scanned += (size_t)(t - s);
+                n = ScanBuf((const unsigned char*)s, (size_t)(t - s), needle,
+                            hits, cap, n);
+                if (n >= cap) break;
+            }
+        }
+        addr = e;
+    }
+    return n;
+}
+
+// scan <hexval> [maxHits] [hexLo] [hexHi] [msBudget]
+void CmdScan(HANDLE h, char** ctx) {
+    char* a = NextTok(ctx);
+    if (a == nullptr) {
+        SendErr(h, "scan <hexval> [maxHits] [hexLo] [hexHi] [msBudget]");
+        return;
+    }
+    const uintptr_t needle = (uintptr_t)strtoull(a, nullptr, 16);
+    int cap = 64;
+    if (char* b = NextTok(ctx)) cap = (int)strtol(b, nullptr, 10);
+    if (cap < 1) cap = 1;
+    if (cap > 256) cap = 256;
+
+    uintptr_t lo = 0x10000;
+    uintptr_t hi = 0x00007FFFFFFFFFFFULL;
+    if (char* b = NextTok(ctx)) lo = (uintptr_t)strtoull(b, nullptr, 16);
+    if (char* b = NextTok(ctx)) hi = (uintptr_t)strtoull(b, nullptr, 16);
+    int budget = 8000;
+    if (char* b = NextTok(ctx)) budget = (int)strtol(b, nullptr, 10);
+    if (budget < 200) budget = 200;
+    if (budget > 120000) budget = 120000;
+
+    static uintptr_t hits[256];
+    size_t scanned = 0;
+    int regions = 0;
+    bool aborted = false;
+    const int n = ScanProcess(needle, lo, hi, hits, cap, &scanned, &regions,
+                              &aborted, GetTickCount64() + (ULONGLONG)budget);
+
+    std::string s;
+    char line[160];
+    sprintf_s(line, "scanned=0x%llX regions=%d aborted=%d count=%d\n",
+              (unsigned long long)scanned, regions, aborted ? 1 : 0, n);
+    s += line;
+    for (int i = 0; i < n; ++i) {
+        sprintf_s(line, "0x%llX\n", (unsigned long long)hits[i]);
+        s += line;
+    }
+    SendOk(h, s.data(), (int)s.size());
+}
+
 void CmdRead(HANDLE h, char** ctx) {
     char* a = NextTok(ctx);
     char* b = NextTok(ctx);
@@ -514,6 +638,8 @@ bool Serve(HANDLE h) {
             CmdScanFov(h, &ctx);
         } else if (strcmp(cmd, "read") == 0) {
             CmdRead(h, &ctx);
+        } else if (strcmp(cmd, "scan") == 0) {
+            CmdScan(h, &ctx);
         } else if (strcmp(cmd, "write") == 0) {
             CmdWrite(h, &ctx);
         } else if (strcmp(cmd, "draw") == 0) {
@@ -532,7 +658,7 @@ bool Serve(HANDLE h) {
             CmdUnload(h, &ctx);
             return false;
         } else {
-            SendErr(h, "未知命令（ping/info/actors/scanfov/read/write/draw/esp/fov/eye/runpy/inject/unload）");
+            SendErr(h, "未知命令（ping/info/actors/scanfov/read/scan/write/draw/esp/fov/eye/runpy/inject/unload）");
         }
     }
 }
