@@ -415,21 +415,65 @@ inline LpLocate& LpState() {
     return s;
 }
 
-// 在堆里找 LocalPlayer 真身。命中可能有多个（别处也缓存了同一个指针），
-// 逐个验证：首字必须正好是 LocalPlayer 的 vftable。
-inline uintptr_t FindLocalPlayerObject(size_t* scanned_out) {
-    const uint64_t needle = (uint64_t)(mem::Base() + vt::kLocalPlayer);
-    mem::HeapHit hits[16];
-    size_t scanned = 0;
-    const int n = mem::ScanHeapQword(&needle, 1, hits, 16, &scanned);
-    if (scanned_out != nullptr) *scanned_out = scanned;
-    LogLine("[sdk] 扫堆找 LocalPlayer：扫了 %.1f MB，命中 %d 个",
-            (double)scanned / (1024.0 * 1024.0), n);
-    for (int i = 0; i < n; ++i) {
-        const uintptr_t p = hits[i].addr;
-        LogLine("[sdk]   候选 #%d = 0x%llX", i, (unsigned long long)p);
-        if (HasVtable(p, vt::kLocalPlayer)) return p;
+// vtable 自检：RVA 指向的位置，头 8 字节必须是一个指向代码段的函数指针。
+//
+// 这一步零成本但极其关键。如果符号表给的 RVA 本身是错的（比如给的是
+// 上一个 build 的值），那"扫堆找带这个 vtable 的对象"必然一个都扫不到，
+// 而且失败日志只会说"没找到"，看不出根因是 RVA 错还是对象不存在。
+// 先把每个类的 vtable 摸一遍，日志里 OK/BAD 一目了然。
+inline void VtableSelfCheck() {
+    struct Probe {
+        const char* name;
+        uintptr_t rva;
+    };
+    static const Probe kAll[] = {
+        {"ClientInstance", vt::kClientInstance}, {"LocalPlayer", vt::kLocalPlayer},
+        {"Player", vt::kPlayer},                 {"Actor", vt::kActor},
+        {"Level", vt::kLevel},                   {"Dimension", vt::kDimension},
+        {"BlockSource", vt::kBlockSource},       {"Minecraft", vt::kMinecraft},
+    };
+    const uintptr_t base = mem::Base();
+    const uintptr_t code_end = base + kCodeEndRva;
+    LogLine("[sdk] vtable 自检（首项应指向代码段 0x%llX..0x%llX）：",
+            (unsigned long long)base, (unsigned long long)code_end);
+    for (const Probe& p : kAll) {
+        const uintptr_t vt = base + p.rva;
+        const uintptr_t fn0 = mem::ReadPtr(vt);
+        const bool ok = (fn0 >= base && fn0 < code_end);
+        LogLine("[sdk]   %-14s rva=0x%-9llX 首项=0x%llX %s", p.name,
+                (unsigned long long)p.rva, (unsigned long long)fn0,
+                ok ? "OK" : "BAD（这个 RVA 不是 vtable）");
     }
+}
+
+// 在堆里找 LocalPlayer 真身。
+//
+// 只扫 LocalPlayer 一个 needle，不顺手把 Actor/Mob 也带上：Actor 的实例
+// 有几十个，混在一起扫会瞬间把候选数组占满，真正的 LocalPlayer 反而被挤掉。
+// 找不到再单独试一次 Player（多继承下有的 build 把主 vtable 指到基类那份）。
+inline uintptr_t FindLocalPlayerObject(size_t* scanned_out) {
+    const uintptr_t base = mem::Base();
+    const uintptr_t try_rva[2] = {vt::kLocalPlayer, vt::kPlayer};
+    size_t total = 0;
+
+    for (int k = 0; k < 2; ++k) {
+        const uint64_t needle = (uint64_t)(base + try_rva[k]);
+        mem::HeapHit hits[32];
+        size_t scanned = 0;
+        const int n = mem::ScanHeapQword(&needle, 1, hits, 32, &scanned);
+        total += scanned;
+        LogLine("[sdk] 扫堆(%s)：%.1f MB，%d 个候选",
+                k == 0 ? "LocalPlayer" : "Player",
+                (double)scanned / (1024.0 * 1024.0), n);
+        for (int i = 0; i < n; ++i) {
+            LogLine("[sdk]   候选 #%d = 0x%llX", i, (unsigned long long)hits[i].addr);
+        }
+        if (n > 0) {
+            if (scanned_out != nullptr) *scanned_out = total;
+            return hits[0].addr;
+        }
+    }
+    if (scanned_out != nullptr) *scanned_out = total;
     return 0;
 }
 
@@ -457,6 +501,8 @@ inline DWORD WINAPI LocateThread(LPVOID param) {
     (void)param;
     LpLocate& st = LpState();
     const ULONGLONG t0 = GetTickCount64();
+
+    VtableSelfCheck();
 
     size_t scanned = 0;
     const uintptr_t obj = FindLocalPlayerObject(&scanned);
